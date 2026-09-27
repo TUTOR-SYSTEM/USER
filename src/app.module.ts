@@ -10,14 +10,14 @@ import { StudentModule } from './features/student/student.module';
 import { JwtAuthGuard, LanguageGuard } from '@packages/guards';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
-import { KafkaModule } from './features/kafka/kafka.module';
+import { RmqModule } from './features/rabbitmq/rmq.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    KafkaModule,
+    RmqModule,
     DatabaseModule,
     UserModule,
     AdminModule,

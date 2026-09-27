@@ -7,7 +7,7 @@ description: Scaffold a complete NestJS feature module (entity schema/dto, contr
 
 Scaffold a full feature module for this backend (an education / tutoring platform). As of a
 2026-09-12 trim, the live feature set is just `auth`, `user`, `admin`, `student` (+ the
-`kafka` infra module — RabbitMQ was fully replaced by Kafka) — the old
+`rabbitmq` infra module) — the old
 `class`/`schedule`/`session`/`curriculum`/etc. features and
 their schema tables were removed. There is no single feature that matches this skill's shape
 exactly anymore, so **the "Shape to match" section below is the authoritative template** —

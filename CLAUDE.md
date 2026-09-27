@@ -27,7 +27,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 5. Read `app.module.ts` only when registering new modules
 6. If the feature is reached from `gateway`, read the matching `*.rpc.controller.ts` here to
    see the actual `@MessagePattern` contract, and cross-check against `gateway`'s
-   `sendRpc(...)` call site (sibling repo, `../gateway/`) when changing either side.
+   `rmqProducer.send(...)` call site (sibling repo, `../gateway/`) when changing either side.
 
 ### When fixing a bug:
 1. Read the specific file with the bug
@@ -54,7 +54,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 | Framework        | NestJS 11                                                |
 | Language         | TypeScript 5 (strictNullChecks only)                     |
 | Database         | PostgreSQL via Drizzle ORM — only `users` + `grades` tables live |
-| Inter-service    | RabbitMQ RPC (`@nestjs/microservices`, RMQ transport) — the only service with live `@MessagePattern` responders (`auth`/`user`/`admin`/`student`), reached by `gateway`'s `USER_SERVICE` client on `user_queue`. Also runs the `rabbitmq` pub/sub feature like the other 3. |
+| Inter-service    | RabbitMQ RPC (`@nestjs/microservices`, RMQ transport) — the only service with live `@MessagePattern` responders (`auth`/`user`/`admin`/`student`), reached by `gateway`'s `USER_SERVICE` client on `user_queue`. Calls `tutor-service`/`third-service` via `RmqProducer` (`src/features/rabbitmq/`). |
 | Authentication   | Passport JWT (access + refresh) — token issuance lives here; `gateway` verifies locally and calls back here to confirm the user exists |
 | Validation       | Zod v4 (via custom `ZodValidationPipe`)                  |
 | API Docs         | @nestjs/swagger (note: title/description in `main.ts` still say "financial management system" — stale, harmless) |
@@ -118,7 +118,7 @@ src/
 │   ├── user/           # HTTP controller + user.rpc.controller.ts + service + repository
 │   ├── admin/          # Generic managed-user CRUD (/admin/students, /admin/tutors) + admin.rpc.controller.ts
 │   ├── student/        # Student-specific surface (parent linking + profile) + student.rpc.controller.ts
-│   └── rabbitmq/        # Pub/sub infra (separate from the RPC responders above)
+│   └── rabbitmq/        # RmqModule + RmqProducer for outbound RPC to tutor/third-service (copy of gateway's)
 └── packages/            # Shared utilities (import via @packages/*): configs, decorators, entities,
                           # filters, guards, helpers, interceptor, interfaces, pipes, strategy
 ```
@@ -140,15 +140,15 @@ PostToolUse hook.
 4. `ResponseInterceptor` wraps the response the same way for both the HTTP controller and the
    RPC controller's underlying service call.
 5. Errors handled by `ErrorInterceptor` + `HttpExceptionFilter` (HTTP) or `RpcExceptionFilter`
-   (RPC, translated back into an `HttpException` by `gateway`'s `sendRpc`).
+   (RPC, translated back into an `HttpException` by `gateway`'s `RmqProducer.send`).
 
 ### RPC contract (see also `../.claude/rules/architecture.md`)
 
 Each feature's `*.rpc.controller.ts` is a thin `@MessagePattern('<feature>.<methodName>')`
 mirror of its HTTP controller, delegating to the *same* `*Service` class — no duplicated logic.
-When adding or renaming a pattern here, update `gateway`'s matching `sendRpc(...)` call site in
+When adding or renaming a pattern here, update `gateway`'s matching `rmqProducer.send(...)` call site in
 the same change (use the `add-rpc-endpoint` skill in `../.claude/skills/`) — nothing enforces
-the pattern string across repos, so a mismatch is a silent 404.
+the pattern string across repos, so a mismatch fails at runtime with "no matching message handler".
 
 ## Environment Variables
 
@@ -160,9 +160,9 @@ the pattern string across repos, so a mismatch is a silent 404.
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Must match `gateway`'s secrets (token issuance happens here) |
 | `JWT_ACCESS_EXPIRES_SECONDS` / `JWT_REFRESH_EXPIRES_SECONDS` | Token TTLs |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` / `GOOGLE_OAUTH_REDIRECT_URL` | Google OAuth (final token issuance lands here via RPC from `gateway`) |
-| `RABBITMQ_URL`                | RabbitMQ connection URL         |
-| `RABBITMQ_EXCHANGE`           | Topic exchange for pub/sub (default `app.events`) |
+| `RABBITMQ_URL`                | RabbitMQ connection URL (local `amqp://admin:admin@localhost:5672`; Railway: RabbitMQ service private URL) |
 | `USER_QUEUE`                  | RMQ RPC listener queue name (default `user_queue`) — this is the queue `gateway`'s `USER_SERVICE` client actually talks to |
+| `TUTOR_QUEUE` / `THIRD_QUEUE` | Queues this service's `RmqProducer` sends to (default `tutor_queue` / `third_queue`) |
 
 No `REDIS_*`, `AWS_*`, `CLOUDINARY_*`, `MAIL_*`, or `RESEND_*` vars are read anywhere in `src/`
 despite the matching packages being installed — password-reset/email and logout-blacklist paths

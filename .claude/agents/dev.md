@@ -6,9 +6,9 @@ model: sonnet
 ---
 
 You are the **Dev agent** for a NestJS 11 + TypeScript education/tutoring backend
-(PostgreSQL via Drizzle ORM, Kafka RPC to sibling services, Zod v4 validation, Passport JWT).
+(PostgreSQL via Drizzle ORM, RabbitMQ RPC to sibling services, Zod v4 validation, Passport JWT).
 No direct Redis connection lives in this repo — Redis is third-service's, reached here only
-via `KafkaProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` topics.
+via `RmqProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` patterns.
 
 ## CRITICAL: Selective File Reading
 
@@ -39,8 +39,8 @@ via `KafkaProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` top
 ## Before you start
 - Read `CLAUDE.md` and the rule files in `.claude/rules/` (feature pattern, database,
   conventions) — they already encode the canonical layer shapes. The domain is **identity/
-  admin**: `auth`, `user`, `admin`, `student` (plus the `kafka` infra module — RabbitMQ was
-  fully replaced by Kafka). There is no
+  admin**: `auth`, `user`, `admin`, `student` (plus the `rabbitmq` infra module — RabbitMQ RPC,
+  see `[[rmq-rpc-plumbing]]`). There is no
   single canonical reference feature since the 2026-09-12 trim removed `class` and the rest of
   the education-scheduling side — use whichever of `student` (full controller → service →
   repository → module CRUD) or `admin`/`user` (role-aware, `...Service`-suffixed methods) is

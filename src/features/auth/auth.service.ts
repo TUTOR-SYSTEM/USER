@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { checkUuidValid, type JwtUserRole } from '@packages/helpers';
 import { CurrentUser } from '@packages/decorators';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
-import { KafkaProducer } from '../kafka/kafka.producer';
+import { RmqProducer } from '../rabbitmq/rmq.producer';
 
 /** How long a forgot-password reset token stays valid — matches the copy in the reset email. */
 const RESET_PASSWORD_TOKEN_TTL_SECONDS = 300;
@@ -55,7 +55,7 @@ export class AuthService {
   constructor(
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
-    private readonly kafkaProducer: KafkaProducer,
+    private readonly rmqProducer: RmqProducer,
     configService: ConfigService,
   ) {
     this.jwtTokensConfig = getJwtTokensConfig(configService);
@@ -64,11 +64,11 @@ export class AuthService {
   /**
    * Fire-and-forget: persists the login session in third-service's Redis via the existing
    * generic `redis.set` topic — key is `session:{userId}`, value is the raw refreshToken.
-   * TTL matches the refresh token's own lifetime. Not awaited by callers — a Kafka/Redis hiccup
+   * TTL matches the refresh token's own lifetime. Not awaited by callers — a RabbitMQ/Redis hiccup
    * here must never fail the login response itself.
    */
   private emitLoginSessionCreated(userId: string, refreshToken: string): void {
-    this.kafkaProducer
+    this.rmqProducer
       .send('redis.set', {
         key: loginSessionRedisKey(userId),
         value: refreshToken,
@@ -265,7 +265,7 @@ export class AuthService {
   }
 
   // Reset token = a random jti stored in third-service's Redis (userId, 5 min TTL); the email
-  // itself is sent by third-service too. Both hops go over this service's own Kafka producer.
+  // itself is sent by third-service too. Both hops go over this service's own RabbitMQ producer.
   async forgotPasswordService(
     forgotPasswordDto: ForgotPasswordDto,
   ): Promise<ForgotPasswordResponseDto> {
@@ -278,13 +278,13 @@ export class AuthService {
     }
 
     const jti = randomUUID();
-    await this.kafkaProducer.send('redis.set', {
+    await this.rmqProducer.send('redis.set', {
       key: resetPasswordRedisKey(jti),
       value: user.id,
       ttlSeconds: RESET_PASSWORD_TOKEN_TTL_SECONDS,
     });
 
-    await this.kafkaProducer.send('email.sendForgotPasswordMail', {
+    await this.rmqProducer.send('email.sendForgotPasswordMail', {
       to: user.email,
       resetToken: jti,
       displayName: user.firstName,
@@ -297,7 +297,7 @@ export class AuthService {
     resetPasswordDto: ResetPasswordDto,
   ): Promise<ResetPasswordResponseDto> {
     const key = resetPasswordRedisKey(resetPasswordDto.jti);
-    const userId = await this.kafkaProducer.send<string | null, { key: string }>('redis.get', {
+    const userId = await this.rmqProducer.send<string | null, { key: string }>('redis.get', {
       key,
     });
     if (!userId) {
@@ -308,7 +308,7 @@ export class AuthService {
 
     // Best-effort cleanup: the password is already changed, so a delete failure here (token
     // stays until its TTL expires) must not fail the response.
-    this.kafkaProducer
+    this.rmqProducer
       .emit('redis.del', { keys: [key] })
       .catch((error: unknown) => this.logger.warn(`Failed to delete reset token ${key}`, error));
 
@@ -381,7 +381,7 @@ export class AuthService {
     }
 
     // Best-effort: if Redis delete fails, the session will expire via TTL anyway.
-    this.kafkaProducer
+    this.rmqProducer
       .emit('redis.del', { keys: [loginSessionRedisKey(user.id)] })
       .catch((error: unknown) =>
         this.logger.warn(`Failed to delete session for user ${user.id}`, error),

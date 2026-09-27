@@ -6,8 +6,8 @@ layering — do not invent new shapes. **2026-09-12 trim**: the finance (`catego
 (`class`, `schedule`, `session`, `curriculum`, `chapter`, `lesson`, `tuition`, `notification`,
 `attendance`, `exercise`, `chat`, `dashboard`, `report`, `agents`) was removed too, along with
 their schema tables/entities — see `[[trimmed-feature-set]]` memory for why and what survived.
-The live feature set is now `auth`, `user`, `admin`, `student`, plus the `kafka` infra
-module (RabbitMQ was fully replaced by Kafka — see `[[kafka-rpc-plumbing]]` memory).
+The live feature set is now `auth`, `user`, `admin`, `student`, plus the `rabbitmq` infra
+module (inter-service transport is RabbitMQ — see `[[rmq-rpc-plumbing]]` memory).
 **There is no more single canonical reference feature** — `class` (the old one) no
 longer exists. Use whichever of `student` (`src/features/student/*`, full controller →
 service → repository → module CRUD) or `admin`/`user` (role-aware, "...Service"-suffixed
@@ -93,36 +93,30 @@ methods) is the closer shape for what you're building, and lean on the inline co
   (`@packages/helpers`), `ZodValidationPipe` (`@packages/pipes`), `@CurrentUser`/`@Public`/
   `@Admin` (`@packages/decorators`). Never re-implement pagination, validation, or UUID checks,
   and do not use the old `@User` decorator.
-- **Infra modules** (`src/features/kafka/*`) are a deliberate exception to the layering
+- **Infra modules** (`src/features/rabbitmq/*`) are a deliberate exception to the layering
   above — they wrap an external connection, not a domain resource, so there is no repository
-  and no controller. `KafkaModule` is `@Global()`, registers one `ClientKafka` via
-  `ClientsModule.register(...)` (`Transport.KAFKA`, brokers/clientId/groupId from env), and
-  exports `KafkaProducer` + `KafkaConsumer` so any feature can inject them directly (no need to
-  add `KafkaModule` to that feature's `imports`). This service does **not** consume Kafka via
-  RabbitMQ-style `subscribe()` calls — inbound handling is plain NestJS `@MessagePattern`/
-  `@EventPattern` decorators on each feature's `*.rpc.controller.ts` (see the RPC contract
-  section above); `KafkaConsumer` today is just a `getGroupId()` helper, not a subscriber.
-- **Kafka topics are tracked centrally** in `src/features/kafka/kafka.constants.ts`:
-  `KAFKA_REQUEST_TOPICS` (topics this service calls via `KafkaProducer.send()` — request/reply;
-  `ClientKafka.subscribeToResponseOf(topic)` must run before `.connect()`, which
-  `KafkaProducer.onModuleInit()` does for every entry, so add a new request-reply topic here or
-  `.send()` throws) and `KAFKA_SERVER_TOPICS` (every `@MessagePattern`/`@EventPattern` this
-  service's own `*.rpc.controller.ts` files consume — a handler needs its topic listed here too,
-  since `ServerKafka` binds listeners at `startAllMicroservices()` and there's no way to derive
-  the list without booting the app). `ALL_KAFKA_TOPICS` (both lists + `.reply` suffixes) feeds
-  `ensureKafkaTopics()` (`kafka.admin.ts`), called once in `main.ts` **before**
-  `NestFactory.create()` — Kafka's `auto.create.topics.enable` is racy for request-reply, so
-  every topic must exist up front.
-- **Producing to Kafka from a feature**: inject `KafkaProducer` directly (no import needed,
-  it's exported globally). Use `.send<TResponse, TRequest>(topic, payload)` for request-reply
+  and no controller. `RmqModule` is `@Global()`, registers one `ClientRMQ` per downstream queue
+  (`TUTOR_SERVICE` → `tutor_queue`, `THIRD_SERVICE` → `third_queue`, plus `USER_SERVICE`),
+  and exports `RmqProducer` so any feature can inject it directly. It is a copy of gateway's
+  module — keep them in sync. Inbound handling is plain NestJS `@MessagePattern`/`@EventPattern`
+  decorators on each feature's `*.rpc.controller.ts`, served by the RMQ microservice `main.ts`
+  opens on `user_queue`.
+- **Routing is by pattern prefix** (`RMQ_PREFIX_ROUTES` in `src/features/rabbitmq/rmq.constants.ts`).
+  Calling a pattern with a new prefix needs an entry there, or `RmqProducer` throws. There is no
+  topic registry or pre-creation step any more — adding a new `@MessagePattern` here needs no
+  extra wiring.
+- **Calling another service from a feature**: inject `RmqProducer` directly (no import needed,
+  it's exported globally). Use `.send<TResponse, TRequest>(pattern, payload)` for request-reply
   (awaited, rethrows the responder's error as a real `HttpException` via `RpcExceptionFilter`'s
-  payload) and `.emit(topic, payload)` for fire-and-forget against an `@EventPattern` topic.
+  payload) and `.emit(pattern, payload)` for fire-and-forget. A `.send()` target must be a
+  `@MessagePattern` returning a non-undefined value — an `@EventPattern` gives an empty reply,
+  which `send()` treats as a failure.
   Both wrap the payload with trace headers (`correlationId`/`traceId`/`parentTraceId`) — callers
   never build the envelope themselves. For a **non-critical side effect that must never fail the
   calling flow** (e.g. best-effort cleanup or session tracking), call `.send()`/`.emit()`
   without `await` and attach a `.catch()` that just logs — see `AuthService.resetPasswordService`
   (best-effort `redis.del` cleanup) and `AuthService.emitLoginSessionCreated` (fire-and-forget
-  `redis.set` after login) as the reference shape. Define topic strings as module-level
-  `const`s or reuse an existing generic topic (`redis.get`/`redis.set`/`redis.del`, hosted by
-  third-service) rather than inventing a new one when the generic KV topics already cover the
+  `redis.set` after login) as the reference shape. Define pattern strings as module-level
+  `const`s or reuse an existing generic pattern (`redis.get`/`redis.set`/`redis.del`, hosted by
+  third-service) rather than inventing a new one when the generic KV patterns already cover the
   need.

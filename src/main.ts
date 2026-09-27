@@ -1,3 +1,9 @@
+// Must load env vars before any other import — `AppModule` transitively imports
+// `rmq.constants.ts`, which reads `process.env.RABBITMQ_URL` at module top-level
+// (evaluated during this static import chain, before `ConfigModule.forRoot()` ever
+// runs inside `NestFactory.create()` below). Without this, RmqProducer's ClientProxy
+// silently falls back to `amqp://guest:guest@localhost:5672` instead of the real URL.
+import 'dotenv/config';
 import { Logger } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
@@ -7,18 +13,17 @@ import { ErrorInterceptor, LoggerInterceptor } from '@packages/interceptor';
 import { HttpExceptionFilter, RpcExceptionFilter } from '@packages/filters';
 import { TraceContextInterceptor } from '@packages/interceptor';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
-import { ensureKafkaTopics } from './features/kafka/kafka.admin';
-import { ALL_KAFKA_TOPICS } from './features/kafka/kafka.constants';
+import { setLogSink } from '@packages/context/log-sink';
+import { RmqProducer } from './features/rabbitmq/rmq.producer';
 
 async function bootstrap() {
-  // Must run before `NestFactory.create()`: the Kafka microservice binds its listeners as soon
-  // as the module tree is instantiated, so topics have to exist before that point or the
-  // consumer races the broker's own auto-create.
-  await ensureKafkaTopics(ALL_KAFKA_TOPICS);
-
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
+
+  // Ships every RPC-hop row to third-service's `request_logs` table, fire-and-forget.
+  const rmqProducer = app.get(RmqProducer);
+  setLogSink((entry) => rmqProducer.emit('log.create', entry));
 
   // `deferInitialization: true` is required: by default `connectMicroservice()` synchronously
   // calls `registerListeners()` before returning, which binds every @MessagePattern handler to
@@ -27,17 +32,14 @@ async function bootstrap() {
   // registration must occur before initialization" and the base `BaseRpcExceptionFilter`
   // fallback keeps handling errors instead). Deferring means listener registration happens
   // inside `startAllMicroservices()` → `listen()`, after our filter is already in place.
-  const kafkaMicroservice = app.connectMicroservice<MicroserviceOptions>(
+  const rmqMicroservice = app.connectMicroservice<MicroserviceOptions>(
     {
-      transport: Transport.KAFKA,
+      transport: Transport.RMQ,
       options: {
-        client: {
-          clientId: process.env.KAFKA_CLIENT_ID ?? 'user-service',
-          brokers: (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(','),
-        },
-        consumer: {
-          groupId: process.env.KAFKA_GROUP_ID ?? 'user-service',
-        },
+        urls: [process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5672'],
+        queue: process.env.USER_QUEUE ?? 'user_queue',
+        queueOptions: { durable: true },
+        prefetchCount: 10,
       },
     },
     { deferInitialization: true },
@@ -45,11 +47,15 @@ async function bootstrap() {
   // Global for this microservice only — every @MessagePattern handler gets it for free, no
   // per-controller @UseFilters(RpcExceptionFilter) needed. Kept off the HTTP `app` global
   // filters (RpcExceptionFilter expects an RPC context, not an Express Response).
-  kafkaMicroservice.useGlobalFilters(new RpcExceptionFilter());
+  rmqMicroservice.useGlobalFilters(new RpcExceptionFilter());
   // Opens the correlationId/traceId/serviceName RequestContext for every @MessagePattern
-  // handler — see [[kafka-rpc-plumbing]] memory.
-  kafkaMicroservice.useGlobalInterceptors(new TraceContextInterceptor());
+  // handler — see [[rmq-rpc-plumbing]] memory.
+  rmqMicroservice.useGlobalInterceptors(new TraceContextInterceptor());
   await app.startAllMicroservices();
+  Logger.log(
+    `[USER] RabbitMQ listener bound (queue "${process.env.USER_QUEUE ?? 'user_queue'}")`,
+    'Bootstrap',
+  );
 
   app.enableCors({ origin: true, credentials: true });
   app.useGlobalInterceptors(new ResponseInterceptor(app.get(Reflector)));

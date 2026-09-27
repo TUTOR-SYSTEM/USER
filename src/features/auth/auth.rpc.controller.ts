@@ -16,9 +16,9 @@ import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { AuthService } from './auth.service';
 
 /**
- * Message-pattern mirror of `AuthController` — reached only by the gateway's Kafka
- * `KafkaProducer` (`auth.*` topics). Delegates to the same, unmodified `AuthService` the HTTP
- * controller uses; no business logic lives here.
+ * Message-pattern mirror of `AuthController` — reached only by the gateway's `RmqProducer`
+ * over `user_queue` (`auth.*` patterns). Delegates to the same, unmodified `AuthService` the
+ * HTTP controller uses; no business logic lives here.
  */
 @Controller()
 export class AuthRpcController {

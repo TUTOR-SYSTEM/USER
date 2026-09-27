@@ -2,7 +2,7 @@ import { BadRequestException, Controller, Get, Inject, Logger } from '@nestjs/co
 import { ApiTags, ApiOperation, ApiResponse as SwaggerResponse } from '@nestjs/swagger';
 import { AppService } from './app.service';
 import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
-import { KafkaProducer } from './features/kafka/kafka.producer';
+import { RmqProducer } from './features/rabbitmq/rmq.producer';
 import { DRIZZLE } from './database/database.module';
 
 @ApiTags('Health')
@@ -11,7 +11,7 @@ export class AppController {
   private readonly logger = new Logger(AppController.name);
   constructor(
     private readonly appService: AppService,
-    private readonly kafkaProducer: KafkaProducer,
+    private readonly rmqProducer: RmqProducer,
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
 
@@ -45,7 +45,7 @@ export class AppController {
   @MessagePattern('kafka.user')
   async receivedMsgError(@Payload() data: unknown) {
     this.logger.log(`[SEND] kafka.ping <- gateway, payload=${JSON.stringify(data)}`);
-    return await this.kafkaProducer.send<unknown, unknown>('kafka.tutor', data);
+    return await this.rmqProducer.send<unknown, unknown>('kafka.tutor', data);
   }
 
   @MessagePattern('kafka.send')

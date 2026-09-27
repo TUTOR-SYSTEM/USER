@@ -5,7 +5,7 @@
 ```
 user/
 ├── src/
-│   ├── main.ts                    # Bootstrap: ensureKafkaTopics() pre-create, Kafka microservice
+│   ├── main.ts                    # Bootstrap: RabbitMQ microservice on `user_queue`
 │   │                              # (deferred init, its own RpcExceptionFilter/TraceContextInterceptor),
 │   │                              # CORS, HTTP interceptors/filters, listen (port 8888)
 │   ├── app.module.ts              # Root module (imports all feature modules)
@@ -16,12 +16,12 @@ user/
 │   │   └── schema.ts              # Live tables: users, grades (everything else trimmed 2026-09-12)
 │   ├── features/
 │   │   ├── auth/       # HTTP controller + auth.rpc.controller.ts (@MessagePattern responder) + service
-│   │                # (also emits fire-and-forget login-session tracking via Kafka — see below)
+│   │                # (also emits fire-and-forget login-session tracking via RabbitMQ — see below)
 │   │   ├── user/        # HTTP controller + user.rpc.controller.ts + service + repository
 │   │   ├── admin/       # Generic managed-user CRUD (/admin/students, /admin/tutors) + admin.rpc.controller.ts
 │   │   ├── student/     # Student-specific surface (parent linking + profile) + student.rpc.controller.ts
-│   │   └── kafka/        # KafkaProducer (send/emit + trace headers) + kafka.constants.ts topic
-│   │                      # lists + kafka.admin.ts ensureKafkaTopics() — see "Kafka RPC Plumbing" below
+│   │   └── rabbitmq/     # RmqModule + RmqProducer (send/emit + trace headers) + rmq.constants.ts
+│   │                      # pattern-prefix → queue routing — see "RMQ RPC Plumbing" below
 │   └── packages/         # Shared utilities
 │       ├── configs/      # JWT sign config
 │       ├── decorators/   # @ApiResponse, @Public, @Roles, @CurrentUser decorators
@@ -59,42 +59,45 @@ SKILL.md` self-contained templates.
 ## RPC contract
 
 This is the only service with live `@MessagePattern` responders today — `auth`, `user`,
-`admin`, `student`, all reached by `gateway`'s Kafka `KafkaProducer` (topic-based, not an RMQ
-queue — see "Kafka RPC Plumbing" below). See `../.claude/rules/architecture.md` for the full
+`admin`, `student`, all reached by `gateway`'s `RmqProducer` over the `user_queue` RabbitMQ queue — see
+"RMQ RPC Plumbing" below. See `../.claude/rules/architecture.md` for the full
 naming contract, and the `add-rpc-endpoint` skill (`../.claude/skills/`) when adding or
 changing a pattern (update both repos together).
 
-## Kafka RPC Plumbing
+## RMQ RPC Plumbing
 
-Referenced elsewhere as `[[kafka-rpc-plumbing]]`. RabbitMQ was **fully replaced by Kafka**
-(commits `8a3402b`/`3744b0b`/`95010f2`/`938c79c`) — there is no `rabbitmq` feature or RMQ
-transport left anywhere in `src/`, despite some rule/skill/agent docs still mentioning it
-before this pass.
+Referenced elsewhere as `[[rmq-rpc-plumbing]]`. Inter-service transport is **RabbitMQ**
+(`@nestjs/microservices` RMQ transport, request/reply over the `amq.rabbitmq.reply-to` direct
+reply queue). History: RabbitMQ → Kafka (2026-09-19) → back to RabbitMQ (2026-09-27). The
+`src/features/rabbitmq/` module is a copy of gateway's — keep the two in sync (only
+`SERVICE_NAME` differs).
 
-- `src/features/kafka/kafka.producer.ts` — `KafkaProducer.send<TResponse, TRequest>(topic, msg)`
-  (request-reply, awaited, rethrows the responder's error as a real `HttpException`) and
-  `.emit(topic, msg)` (fire-and-forget). Both wrap the payload as
-  `{ value, headers: { correlationId, traceId, parentTraceId, serviceName } }` via
-  `wrapWithTraceHeaders` — callers never build this envelope themselves.
-- `src/features/kafka/kafka.constants.ts` — `KAFKA_REQUEST_TOPICS` (topics called via `.send()`;
-  must be listed or `ClientKafka` never subscribed to `<topic>.reply` and `.send()` throws) vs.
-  `KAFKA_SERVER_TOPICS` (every `@MessagePattern`/`@EventPattern` this service's own
-  `*.rpc.controller.ts` files host). `ALL_KAFKA_TOPICS` feeds `kafka.admin.ts`'s
-  `ensureKafkaTopics()`, called in `main.ts` **before** `NestFactory.create()` (Kafka's
-  broker-side auto-create is racy for request-reply).
-- `src/main.ts` opens the Kafka microservice with `deferInitialization: true` specifically so
-  `RpcExceptionFilter`/`TraceContextInterceptor` can be attached as global filters/interceptors
-  *before* `startAllMicroservices()` binds the `@MessagePattern` listeners — attaching after
-  `connectMicroservice()` without deferring is silently too late.
-- `redis.get`/`redis.set`/`redis.del` are **generic KV topics hosted by third-service**
+- **Queues**: one durable queue per responder service — `user_queue` (this service),
+  `tutor_queue`, `third_queue`. `main.ts` listens on `USER_QUEUE` via `connectMicroservice`
+  (`Transport.RMQ`, `prefetchCount: 10`). No topic pre-creation: queues are asserted on connect.
+- `src/features/rabbitmq/rmq.producer.ts` — `RmqProducer.send<TResponse, TRequest>(pattern, msg,
+  timeoutMs?, maxRetries?)` (request-reply, retries with backoff, rethrows the responder's error
+  as a real `HttpException`; 504 on timeout) and `.emit(pattern, msg)` (fire-and-forget). Both
+  wrap the payload in an `RmqRecord` whose AMQP `headers` carry `correlationId`/`traceId`/
+  `parentTraceId`/`serviceName` — callers never build this themselves.
+- `src/features/rabbitmq/rmq.constants.ts` — `RMQ_PREFIX_ROUTES` maps a pattern's first segment
+  to the owning service's client/queue (`RMQ_PATTERN_ROUTES` for full-pattern overrides, e.g.
+  `kafka.tutor` → tutor). An unrouted prefix throws at call time.
+- **Responder side**: `TraceContextInterceptor` reads the headers from
+  `RmqContext.getMessage().properties.headers` and the pattern from `getPattern()`.
+  `main.ts` opens the microservice with `deferInitialization: true` so `RpcExceptionFilter`/
+  `TraceContextInterceptor` are attached *before* `startAllMicroservices()` binds the listeners.
+- **`send()` to an `@EventPattern` handler** gets an empty reply, which `RmqProducer.send()`
+  treats as a failure. Anything called with `send()` must be a `@MessagePattern` that returns a
+  non-undefined value (third-service's `redis.set` returns `{ ok: true }` for this reason).
+- `redis.get`/`redis.set`/`redis.del` are **generic KV patterns hosted by third-service**
   (`RedisRpcController` → `RedisService`, backed by `ioredis`) — this repo has no direct Redis
-  connection. `AuthService` already reuses these for two things: `forgotPasswordService`/
-  `resetPasswordService` (reset-token storage, key `reset-password:<jti>`) and, as of this
-  session, every successful login flow (`loginService`/`loginByUserCodeService`/
-  `facebookLoginService`/`googleLoginService`) fire-and-forget `emitLoginSessionCreated
-  (refreshToken)` — stores `session:<loginAt ms-epoch>` → the raw refreshToken (TTL =
-  `jwtTokensConfig.refreshExpiresIn`), not awaited, errors just logged. Prefer reusing these
-  generic topics for new KV-shaped needs before inventing a new Kafka topic.
+  connection. `AuthService` reuses them for `forgotPasswordService`/`resetPasswordService`
+  (reset-token storage, key `reset-password:<jti>`; `redis.set` is awaited so the token exists
+  before the email goes out) and for every successful login flow's fire-and-forget
+  `emitLoginSessionCreated` (key `session:<userId>` → refreshToken, TTL =
+  `jwtTokensConfig.refreshExpiresIn`, errors only logged). Prefer reusing these generic patterns
+  for new KV-shaped needs before inventing a new one.
 
 ## Environment Variables
 
@@ -106,7 +109,9 @@ before this pass.
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Must match `gateway` (token issuance happens here) |
 | `JWT_ACCESS_EXPIRES_SECONDS` / `JWT_REFRESH_EXPIRES_SECONDS` | Token TTLs |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` / `GOOGLE_OAUTH_REDIRECT_URL` | Google OAuth — final token issuance lands here via RPC from `gateway` |
-| `KAFKA_CLIENT_ID` / `KAFKA_BROKERS` / `KAFKA_GROUP_ID` | Kafka client id, broker list, consumer group — defaults `user-service` / `localhost:9092` / `user-service` |
+| `RABBITMQ_URL` | AMQP URL — local `amqp://admin:admin@localhost:5672`; Railway: RabbitMQ service private URL |
+| `USER_QUEUE` | Queue this service listens on (default `user_queue`) |
+| `TUTOR_QUEUE` / `THIRD_QUEUE` | Queues `RmqProducer` sends to (default `tutor_queue` / `third_queue`) |
 
 No `REDIS_*`/`MAIL_*`/`AWS_*`/`CLOUDINARY_*`/`RESEND_*` vars are read anywhere in `src/` —
 password-reset/email and logout-blacklist code paths that would need them were removed (see
@@ -116,8 +121,8 @@ password-reset/email and logout-blacklist code paths that would need them were r
 
 `docker-compose.yml` provides Postgres (`POSTGRES_PORT`, default `5432`) and Redis
 (`REDIS_PORT`, default `6380`→`6379`) containers — this repo never opens a Redis client itself;
-Redis is reached only indirectly, via Kafka RPC to third-service's generic `redis.*` topics
-(see "Kafka RPC Plumbing" above).
+Redis is reached only indirectly, via RabbitMQ RPC to third-service's generic `redis.*` patterns
+(see "RMQ RPC Plumbing" above). The local RabbitMQ broker runs from `../gateway/docker-compose.yml`.
 
 ## Testing
 
@@ -142,8 +147,8 @@ Redis is reached only indirectly, via Kafka RPC to third-service's generic `redi
 ## Trimmed Feature Set (2026-09-12)
 
 Referenced elsewhere as `[[trimmed-feature-set]]`. Two unrelated things were removed from this
-repo on 2026-09-12, leaving only `auth`/`user`/`admin`/`student` (+ `kafka` infra, née
-`rabbitmq` — see "Kafka RPC Plumbing" above):
+repo on 2026-09-12, leaving only `auth`/`user`/`admin`/`student` (+ `rabbitmq` infra — see
+"RMQ RPC Plumbing" above):
 
 - **Personal-finance features** (`category`, `wallet`, `transaction`) — an earlier, unrelated
   app concept for this repo. Fully deleted: no other service owns these; if they come back,
