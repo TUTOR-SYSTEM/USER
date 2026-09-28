@@ -23,7 +23,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 1. Read `CLAUDE.md` and `.claude/rules/*.md` for conventions
 2. Read the specific feature module: `src/features/{name}/*`
 3. Read related entities: `src/packages/entities/{name}/*`
-4. Read database schema only if modifying tables: `src/database/schema.ts`
+4. Read database schema only if modifying tables: `../gateway/src/database/schema.ts` (canonical, this repo has no local copy)
 5. Read `app.module.ts` only when registering new modules
 6. If the feature is reached from `gateway`, read the matching `*.rpc.controller.ts` here to
    see the actual `@MessagePattern` contract, and cross-check against `gateway`'s
@@ -43,7 +43,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 ### Files to read ONLY when necessary:
 - `src/main.ts` — Only when changing bootstrap or the RMQ listener setup
 - `src/app.module.ts` — Only when adding/removing modules
-- `src/database/schema.ts` — Only when modifying database schema
+- `../gateway/src/database/schema.ts` — Only when modifying database schema (canonical since 2026-09-28; this repo has no local copy)
 - `src/packages/helpers/*` — Only when using specific helpers
 - `src/data/constants/*` — Only when adding error/success messages
 
@@ -86,17 +86,17 @@ bun run test:cov          # Unit tests with coverage
 bun run test:e2e          # E2E tests
 bun run test:debug        # Debug tests with inspect
 
-# Database (Drizzle)
-bun run db:generate       # Generate migration SQL from schema changes
-bun run db:migrate        # Run pending migrations
-bun run db:push           # Push schema directly (dev only)
-bun run db:studio         # Open Drizzle Studio
+# Database (Drizzle) — schema + migrations now live in ../gateway (2026-09-28 consolidation).
+# This repo has no local db:generate/db:migrate/db:push/db:studio anymore; run those from
+# gateway. See `.claude/rules/database.md`.
 
 # Database Seeds (scripts/*.ts, Bun runtime)
 bun run db:seed:user / users-bulk / grades
-# seed-categories.ts / seed-wallet.ts / seed-edu-flow.ts / seed-dashboard.ts /
-# seed-curriculum-demo.ts scripts still exist on disk but target tables that no longer exist
-# in schema.ts (post-trim) — do not run them; they're leftover from the pre-trim schema.
+# seed-categories.ts / seed-wallet.ts still target tables that don't exist anywhere (dead,
+# commented out even in gateway's merged schema) — do not run them. seed-edu-flow.ts /
+# seed-dashboard.ts / seed-curriculum-demo.ts now type-check again (their tables live in
+# gateway's merged schema), but they seed tutor-service-owned tables, not anything this repo
+# queries — only run them if you actually want that cross-service seed data.
 
 # Containers (Postgres + Redis)
 bun compose:up / compose:down
@@ -111,8 +111,10 @@ src/
 ├── app.module.ts                 # Root module (imports all feature modules)
 ├── app.controller.ts / app.service.ts   # Health-check
 ├── database/
-│   ├── database.module.ts        # Global Drizzle ORM provider
-│   └── schema.ts                 # Live tables: users, grades (everything else trimmed 2026-09-12)
+│   └── database.module.ts        # Global Drizzle ORM provider — schema imported from
+│                                  # `@tutor/gateway/schema` (../gateway, canonical since
+│                                  # 2026-09-28); no local schema.ts/drizzle.config.ts anymore.
+│                                  # Live tables owned by this repo: users, grades.
 ├── features/
 │   ├── auth/          # HTTP controller + auth.rpc.controller.ts (@MessagePattern responder) + service
 │   ├── user/           # HTTP controller + user.rpc.controller.ts + service + repository

@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, count, desc, eq, ilike, inArray, or, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { DRIZZLE } from '../../database/database.module';
-import { grades, users } from '../../database/schema';
+import { grades, users } from '@tutor/gateway/schema';
 import type { GetUsersQueryDto, UpdateGradeDto, UserDataFieldDto } from '@packages/entities/user';
 
 @Injectable()
