@@ -1,0 +1,43 @@
+# VCS
+.git
+.gitignore
+
+# Dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+bun.lockb
+
+# Tests (not needed in final image)
+test
+
+# Config & env
+.env*
+docker.env
+docker-compose*.yml
+
+# Build artifacts
+dist
+build
+.next
+coverage
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Misc
+.dockerignore
+Dockerfile
+README.md
+docs/
+scripts/
+.claude/
+.claude.json
+eslint.config.js
+jest.config.js
+prettier.config.js

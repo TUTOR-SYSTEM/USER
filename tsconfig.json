@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "skipLibCheck": true,
     "declarationDir": "./dist",
     "module": "nodenext",
     "moduleResolution": "nodenext",
@@ -17,6 +18,7 @@
     "outDir": "./dist",
     "paths": {
       "@packages/*": ["./src/packages/*"],
+      "@packages/database/*": ["./src/database/*"],
       "src/*": ["./src/*"]
     },
     "skipLibCheck": true,

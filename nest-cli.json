@@ -3,6 +3,7 @@
   "collection": "@nestjs/schematics",
   "sourceRoot": "src",
   "compilerOptions": {
+    "skipLibCheck": true,
     "deleteOutDir": true,
     "plugins": [
       {

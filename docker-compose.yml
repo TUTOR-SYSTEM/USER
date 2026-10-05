@@ -1,36 +1,68 @@
+version: '3.8'
+
 services:
-  postgres:
-    image: docker.io/library/postgres:16-alpine
-    container_name: backends-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-backends_db}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  user-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: user-service
     ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      - "8889:8889"
+    env_file:
+      - docker.env
+    environment:
+      - NODE_ENV=development
+      - PORT=8889
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+    networks:
+      - backend
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: backends-postgres
+    environment:
+      - POSTGRES_DB=user_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-backends_db}']
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
-      - backend-net
+      - backend
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: backends-rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - backend
 
   redis:
-    image: docker.io/library/redis:7-alpine
+    image: redis:7-alpine
     container_name: backends-redis
-    restart: unless-stopped
     ports:
-      - '${REDIS_PORT:-6380}:6379'
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
     networks:
-      - backend-net
+      - backend
 
 volumes:
   postgres_data:
+  rabbitmq_data:
+  redis_data:
 
 networks:
-  backend-net:
-    name: backend-net
+  backend:
+    driver: bridge

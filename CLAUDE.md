@@ -23,7 +23,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 1. Read `CLAUDE.md` and `.claude/rules/*.md` for conventions
 2. Read the specific feature module: `src/features/{name}/*`
 3. Read related entities: `src/packages/entities/{name}/*`
-4. Read database schema only if modifying tables: `../gateway/src/database/schema.ts` (canonical, this repo has no local copy)
+4. Read database schema only if modifying tables: `../gateway/src/database/schema.ts` (canonical) — `src/database/schema.ts` is a verbatim local mirror of its `users`/`grades`, keep in sync
 5. Read `app.module.ts` only when registering new modules
 6. If the feature is reached from `gateway`, read the matching `*.rpc.controller.ts` here to
    see the actual `@MessagePattern` contract, and cross-check against `gateway`'s
@@ -43,7 +43,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 ### Files to read ONLY when necessary:
 - `src/main.ts` — Only when changing bootstrap or the RMQ listener setup
 - `src/app.module.ts` — Only when adding/removing modules
-- `../gateway/src/database/schema.ts` — Only when modifying database schema (canonical since 2026-09-28; this repo has no local copy)
+- `../gateway/src/database/schema.ts` — Only when modifying database schema (canonical since 2026-09-28; mirrored locally in `src/database/schema.ts` since 2026-10-05)
 - `src/packages/helpers/*` — Only when using specific helpers
 - `src/data/constants/*` — Only when adding error/success messages
 
@@ -111,10 +111,10 @@ src/
 ├── app.module.ts                 # Root module (imports all feature modules)
 ├── app.controller.ts / app.service.ts   # Health-check
 ├── database/
-│   └── database.module.ts        # Global Drizzle ORM provider — schema imported from
-│                                  # `@tutor/gateway/schema` (../gateway, canonical since
-│                                  # 2026-09-28); no local schema.ts/drizzle.config.ts anymore.
-│                                  # Live tables owned by this repo: users, grades.
+│   ├── database.module.ts        # Global Drizzle ORM provider — imports ./schema
+│   └── schema.ts                 # Verbatim mirror of gateway's users/grades (gateway stays
+│                                  # canonical + owns migrations; mirror exists so Docker builds
+│                                  # without ../gateway). Import via `@packages/database/schema`.
 ├── features/
 │   ├── auth/          # HTTP controller + auth.rpc.controller.ts (@MessagePattern responder) + service
 │   ├── user/           # HTTP controller + user.rpc.controller.ts + service + repository

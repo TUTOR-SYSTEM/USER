@@ -4,7 +4,7 @@ import { Inject } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { DRIZZLE } from '../../database/database.module';
-import { users } from '@tutor/gateway/schema';
+import { users } from '@packages/database/schema';
 import type {
   CreateStudentDto,
   GetStudentsQueryDto,

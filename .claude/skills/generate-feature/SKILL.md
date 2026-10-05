@@ -70,10 +70,11 @@ For a feature named `foo`:
 
 ## Wiring (required)
 
-1. **`src/database/schema.ts`** — if a new table is needed, add the `pgEnum`(s) and
-   `pgTable('foos', {...})` with a UUID primary key (`.defaultRandom()`), `createdAt` /
-   `updatedAt` timestamps, following the style of `users` / `grades`. Then run
-   `bun run db:generate` and tell the user to run `bun run db:migrate`.
+1. **Schema** — if a new table is needed, add the `pgEnum`(s) and `pgTable('foos', {...})`
+   (UUID primary key `.defaultRandom()`, `createdAt`/`updatedAt`, style of `users`/`grades`)
+   to the canonical `../gateway/src/database/schema.ts`, run `bun run db:generate` in gateway,
+   then copy the definition verbatim into the local mirror `src/database/schema.ts`. Tell the
+   user to run `bun run db:migrate` from gateway. See `generate-db-table`.
 2. **`src/app.module.ts`** — add `import { FooModule } from './features/foo/foo.module';`
    and insert `FooModule` into the `imports: [...]` array (near the other feature modules).
 

@@ -8,7 +8,12 @@
       "Read(//home/haidangphan/.claude/plugins/cache/understand-anything/understand-anything/2.9.3/packages/core/dist/**)",
       "Bash(npx tsc *)",
       "Bash(./node_modules/.bin/tsc --noEmit -p .)",
-      "Bash(rtk grep *)"
+      "Bash(rtk grep *)",
+      "Bash(rtk npm *)",
+      "Bash(npm install *)",
+      "Bash(rtk docker *)",
+      "Bash(rtk find *)",
+      "Bash(echo \"Exit code: $?\")"
     ]
   }
 }

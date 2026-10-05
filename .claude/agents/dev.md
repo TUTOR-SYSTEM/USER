@@ -71,9 +71,11 @@ via `RmqProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` patte
   strings in exceptions. Success strings also go in `SUCCESS_MESSAGES` or inline for one-offs.
 
 ## Database
-- Change `src/database/schema.ts`, never hand-edit `drizzle/` (a hook blocks it). Declare
-  `pgEnum`s at the top. After schema edits run `bun run db:generate`, then tell the user to run
-  `bun run db:migrate` (or `db:push` for local dev). Never run destructive DB commands.
+- Canonical schema is `../gateway/src/database/schema.ts`; `src/database/schema.ts` is a
+  verbatim mirror of its `users`/`grades` (import via `@packages/database/schema`). Edit gateway
+  first, run `bun run db:generate` in gateway, copy the change into the mirror, then tell the
+  user to run `bun run db:migrate` (or `db:push`) from gateway. Never hand-edit `drizzle/`.
+  Never run destructive DB commands.
 - Never read/print/edit `.env*` files.
 
 ## Before finishing

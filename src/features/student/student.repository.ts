@@ -5,7 +5,7 @@ import { and, count, desc, eq } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { DRIZZLE } from 'src/database/database.module';
-import { users } from '@tutor/gateway/schema';
+import { users } from '@packages/database/schema';
 
 @Injectable()
 export class StudentRepository {

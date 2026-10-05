@@ -11,7 +11,7 @@ mirrored was removed in a 2026-09-12 trim — follow the shape below; `student.r
 pagination.
 
 ## Prerequisites
-- The Drizzle table (e.g. `foos`) exists in `src/database/schema.ts`.
+- The Drizzle table (e.g. `foos`) exists in `src/database/schema.ts` (local mirror of gateway's canonical schema).
 - The DTOs exist under `@packages/entities/foo` (see `generate-entity`).
 
 ## Shape
@@ -21,7 +21,7 @@ import { and, count, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { DRIZZLE } from '../../database/database.module';
 import { CreateFooDto, GetFoosQueryDto } from '@packages/entities/foo';
-import { foos } from 'src/database/schema';
+import { foos } from '@packages/database/schema';
 import { buildListWhereClause } from '@packages/helpers';
 
 @Injectable()
