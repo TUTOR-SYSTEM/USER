@@ -7,12 +7,12 @@ services:
       dockerfile: Dockerfile
     container_name: user-service
     ports:
-      - "8889:8889"
+      - "4002:4002"
     env_file:
       - docker.env
     environment:
       - NODE_ENV=development
-      - PORT=8889
+      - PORT=4002
     depends_on:
       - postgres
       - rabbitmq

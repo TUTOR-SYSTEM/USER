@@ -4,7 +4,8 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps --no-audit --no-fund
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
 RUN npm run build && test -f dist/main.js
@@ -13,13 +14,14 @@ RUN npm run build && test -f dist/main.js
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --legacy-peer-deps --ignore-scripts && npm cache clean --force
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --legacy-peer-deps --ignore-scripts --no-audit --no-fund
 
 # --- RUNTIME ---
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production \
-    PORT=8888 \
+    PORT=4002 \
     USER_QUEUE=user_queue \
     TUTOR_QUEUE=tutor_queue \
     THIRD_QUEUE=third_queue
@@ -36,5 +38,5 @@ COPY --chown=node:node package.json ./
 # - GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_CALLBACK_URL, GOOGLE_OAUTH_REDIRECT_URL
 
 USER node
-EXPOSE 8888
+EXPOSE 4002
 CMD ["node", "dist/main"]
