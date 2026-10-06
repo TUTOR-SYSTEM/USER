@@ -158,6 +158,7 @@ the pattern string across repos, so a mismatch fails at runtime with "no matchin
 | ----------------------------- | ------------------------------- |
 | `NODE_ENV`                    | Environment mode                |
 | `PORT`                        | Server port (default `8888` — must be unique when running alongside the other 3 services) |
+| `SERVICE_HOST`                | Optional service address reported in request logs (`host`), e.g. `user-service:50051` (default `user-service:${PORT}`) |
 | `DATABASE_URL`                | Postgres connection URL         |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Must match `gateway`'s secrets (token issuance happens here) |
 | `JWT_ACCESS_EXPIRES_SECONDS` / `JWT_REFRESH_EXPIRES_SECONDS` | Token TTLs |
