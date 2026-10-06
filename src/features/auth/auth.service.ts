@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, UnauthorizedException } from '
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import type { User } from '@packages/entities/user';
 import type {
   ForgotPasswordDto,
   ForgotPasswordResponseDto,
@@ -25,7 +26,6 @@ import { UserService } from '../user/user.service';
 import { getJwtTokensConfig } from '@packages/configs/jwt-sign.config';
 import { randomUUID } from 'node:crypto';
 import { checkUuidValid, type JwtUserRole } from '@packages/helpers';
-import { CurrentUser } from '@packages/decorators';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
 
@@ -77,6 +77,53 @@ export class AuthService {
       .catch((error: unknown) =>
         this.logger.warn(`Failed to create login session for user ${userId}`, error),
       );
+  }
+
+  /** Signs the access/refresh pair, records the session and builds the login response. */
+  private async issueLoginResponse(user: User): Promise<LoginResponseDto> {
+    if (user.isActive === false) {
+      throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
+    }
+    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
+    const [accessToken, refreshToken] = await Promise.all([
+      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
+      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
+    ]);
+
+    this.emitLoginSessionCreated(user.id, refreshToken);
+
+    return {
+      accessToken,
+      refreshToken,
+      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
+    };
+  }
+
+  /** Finds the user by email or auto-registers them as STUDENT (Google/Facebook sign-in). */
+  private async findOrCreateOAuthUser(profile: {
+    email: string;
+    firstName: string;
+    lastName: string;
+  }): Promise<User> {
+    const [existing] = await this.userService.getUserByField({
+      field: 'email',
+      value: profile.email,
+    });
+    if (existing) return existing;
+
+    await this.userService.createUserService({
+      email: profile.email,
+      password: randomUUID(),
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      role: 'STUDENT',
+    });
+    const [created] = await this.userService.getUserByField({
+      field: 'email',
+      value: profile.email,
+    });
+    if (!created) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
+    return created;
   }
 
   // TODO: register tutor ...
@@ -143,19 +190,7 @@ export class AuthService {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_PASSWORD);
     }
 
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(user);
   }
 
   // TODO: login with userCode + password ...
@@ -174,94 +209,16 @@ export class AuthService {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_PASSWORD);
     }
 
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(user);
   }
 
   // TODO: login with google account ...
   async facebookLoginService(profile: FacebookProfile): Promise<LoginResponseDto> {
-    const rows = await this.userService.getUserByField({ field: 'email', value: profile.email });
-    let user = rows[0];
-    if (!user) {
-      await this.userService.createUserService({
-        email: profile.email,
-        password: randomUUID(),
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-        role: 'STUDENT',
-      });
-      const createdRows = await this.userService.getUserByField({
-        field: 'email',
-        value: profile.email,
-      });
-      user = createdRows[0];
-      if (!user) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
-    }
-
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(await this.findOrCreateOAuthUser(profile));
   }
 
   async googleLoginService(profile: GoogleProfile): Promise<LoginResponseDto> {
-    const rows = await this.userService.getUserByField({
-      field: 'email',
-      value: profile.email,
-    });
-
-    let user = rows[0];
-    if (!user) {
-      await this.userService.createUserService({
-        email: profile.email,
-        password: randomUUID(),
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-        role: 'STUDENT',
-      });
-      const createdRows = await this.userService.getUserByField({
-        field: 'email',
-        value: profile.email,
-      });
-      user = createdRows[0];
-      if (!user) {
-        throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
-      }
-    }
-
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(await this.findOrCreateOAuthUser(profile));
   }
 
   // Reset token = a random jti stored in third-service's Redis (userId, 5 min TTL); the email
@@ -357,25 +314,11 @@ export class AuthService {
     }
 
     const user = rows[0];
-    const accessPayload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const refreshPayload = { sub: user.id, email: user.email };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, accessPayload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, refreshPayload, this.jwtTokensConfig),
-    ]);
-
-    // Renew the session in Redis with the new refresh token
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(user);
   }
 
   // Logout: delete the session from Redis so the gateway rejects subsequent requests with 401
-  logoutService(@CurrentUser() user: Record<string, string>) {
+  logoutService(user: Record<string, string>) {
     if (!user.id || !checkUuidValid({ data: user.id })) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_USER_ID);
     }

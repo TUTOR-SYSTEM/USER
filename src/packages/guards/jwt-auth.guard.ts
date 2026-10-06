@@ -85,8 +85,10 @@ export class JwtAuthGuard implements CanActivate {
 
     const accessSecret =
       this.configService.get<string>('JWT_ACCESS_SECRET') ??
-      this.configService.get<string>('JWT_SECRET') ??
-      'dev-insecure-jwt-secret';
+      this.configService.get<string>('JWT_SECRET');
+    if (!accessSecret) {
+      throw new UnauthorizedException('Unauthorized ...');
+    }
 
     let decoded: unknown;
     try {
@@ -100,9 +102,13 @@ export class JwtAuthGuard implements CanActivate {
     const payload = parseAccessPayload(decoded);
     request.user = payload;
 
-    const user = await this.db.select().from(users).where(eq(users.id, payload.id)).limit(1);
+    const user = await this.db
+      .select({ id: users.id, isActive: users.isActive })
+      .from(users)
+      .where(eq(users.id, payload.id))
+      .limit(1);
 
-    if (user.length === 0) {
+    if (user.length === 0 || user[0].isActive === false) {
       throw new UnauthorizedException('Unauthorized ...');
     }
 

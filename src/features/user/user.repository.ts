@@ -117,7 +117,7 @@ export class UserRepository {
   async updatePassword(id: string, hashedPassword: string) {
     const [user] = await this.db
       .update(users)
-      .set({ password: hashedPassword })
+      .set({ password: hashedPassword, updatedAt: new Date() })
       .where(eq(users.id, id))
       .returning();
     return user ?? null;

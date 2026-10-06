@@ -30,7 +30,7 @@ export class UserRpcController {
 
   @MessagePattern('user.getUserByField')
   getUserByField(@Payload() dto: UserDataFieldDto) {
-    return this.userService.getUserByField(dto);
+    return this.userService.findUsersByFieldPublic(dto);
   }
 
   @MessagePattern('user.createUser')

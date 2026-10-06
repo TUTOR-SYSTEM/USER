@@ -55,7 +55,6 @@ export const DATABASE_ENVS = [
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           try {
-            logger.log('this connection:', databaseUrl);
             await client`SELECT 1`;
             logger.log('✅ PostgreSQL connected.');
             return drizzle(client, { schema: tables });

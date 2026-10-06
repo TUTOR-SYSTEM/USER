@@ -226,6 +226,12 @@ export const ERROR_TRANSLATIONS = {
     en: 'Students are not allowed to update their own first/last name',
   },
 
+  CANNOT_UPDATE_RESTRICTED_FIELDS: {
+    vi: 'Bạn không được tự thay đổi các trường này (vai trò, trạng thái, mã, liên kết)',
+    en: 'You are not allowed to update restricted fields (role, status, code, links) on your own account',
+  },
+  ACCOUNT_DEACTIVATED: { vi: 'Tài khoản đã bị vô hiệu hóa', en: 'Account has been deactivated' },
+
   // Upload
   KEY_QUERY_PARAM_REQUIRED: {
     vi: 'Thiếu tham số truy vấn "key"',
