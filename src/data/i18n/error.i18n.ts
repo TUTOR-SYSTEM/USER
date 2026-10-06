@@ -9,6 +9,10 @@ export const ERROR_TRANSLATIONS = {
   EMAIL_EXISTS: { vi: 'Email đã tồn tại', en: 'Email already exists' },
   USERNAME_EXISTS: { vi: 'Tên đăng nhập đã tồn tại', en: 'Username already exists' },
   USER_NOT_FOUND: { vi: 'Không tìm thấy người dùng', en: 'User not found' },
+  INVALID_CREDENTIALS: {
+    vi: 'Thông tin đăng nhập không đúng',
+    en: 'Invalid credentials',
+  },
   INVALID_PASSWORD: { vi: 'Mật khẩu không đúng', en: 'Invalid password' },
   INVALID_RESET_PASSWORD_TOKEN: {
     vi: 'Mã đặt lại mật khẩu không hợp lệ',

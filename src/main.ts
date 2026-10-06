@@ -20,6 +20,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
+  app.enableShutdownHooks();
 
   // Ships every RPC-hop row to third-service's `request_logs` table, fire-and-forget.
   const rmqProducer = app.get(RmqProducer);
@@ -63,8 +64,8 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   const config = new DocumentBuilder()
-    .setTitle('Backends API')
-    .setDescription('API documentation for the Backends financial management system')
+    .setTitle('User Service API')
+    .setDescription('API documentation for the tutoring platform user/identity service')
     .setVersion('1.0')
     .addBearerAuth(
       {
@@ -75,29 +76,11 @@ async function bootstrap() {
       },
       'access-token',
     )
-    // ── Tutor Management ─────────────────────────────
     .addTag('Users')
     .addTag('Auth')
     .addTag('Students')
-    .addTag('Curriculum')
-    .addTag('Chapter')
-    .addTag('Lesson')
-    .addTag('Classes')
-    .addTag('Schedules')
-    .addTag('Sessions')
-    .addTag('Exercises')
-    .addTag('Tuitions')
-    .addTag('Notifications')
-    // ── Finance Management ────────────────────────────
-    .addTag('Categories')
-    .addTag('Wallets')
-    .addTag('Transactions')
-    .addTag('Reports')
-    // ── System ────────────────────────────────────────
-    .addTag('Upload')
-    .addTag('Cloudinary')
+    .addTag('Admin')
     .addTag('Health')
-    .addTag('Redis')
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, document, {

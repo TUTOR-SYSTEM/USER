@@ -17,6 +17,7 @@ import type {
 } from '@packages/entities/auth';
 import {
   compareData,
+  hashData,
   signAccessToken,
   signRefreshToken,
   type JwtRefreshPayload,
@@ -52,6 +53,7 @@ function parseRefreshTokenPayload(value: unknown): JwtRefreshPayload {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly jwtTokensConfig: JwtTokensConfig;
+  private dummyHash?: Promise<string>;
   constructor(
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
@@ -77,6 +79,17 @@ export class AuthService {
       .catch((error: unknown) =>
         this.logger.warn(`Failed to create login session for user ${userId}`, error),
       );
+  }
+
+  /**
+   * Single generic error for unknown user and wrong password (no account enumeration). A dummy
+   * bcrypt compare runs for unknown users so response time doesn't leak existence either.
+   */
+  private async verifyCredentials(user: User | undefined, password: string): Promise<User> {
+    const hash = user?.password ?? (await (this.dummyHash ??= hashData('dummy-password')));
+    const ok = await compareData(password, hash);
+    if (!user || !ok) throw new BadRequestException(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    return user;
   }
 
   /** Signs the access/refresh pair, records the session and builds the login response. */
@@ -176,19 +189,11 @@ export class AuthService {
 
   // TODO:  login by email + password ...
   async loginService(loginDto: LoginDto): Promise<LoginResponseDto> {
-    const [user] = await this.userService.getUserByField({
+    const [found] = await this.userService.getUserByField({
       field: 'email',
       value: loginDto.email,
     });
-
-    if (!user) {
-      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
-    }
-
-    const isPasswordOk = await compareData(loginDto.password, user.password);
-    if (!isPasswordOk) {
-      throw new BadRequestException(ERROR_MESSAGES.INVALID_PASSWORD);
-    }
+    const user = await this.verifyCredentials(found, loginDto.password);
 
     return this.issueLoginResponse(user);
   }
@@ -200,14 +205,8 @@ export class AuthService {
       value: dto.userCode,
     });
 
-    const user = rows.find((u) => u.role === dto.role);
-    if (!user) {
-      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
-    }
-    const isPasswordOk = await compareData(dto.password, user.password);
-    if (!isPasswordOk) {
-      throw new BadRequestException(ERROR_MESSAGES.INVALID_PASSWORD);
-    }
+    const found = rows.find((u) => u.role === dto.role);
+    const user = await this.verifyCredentials(found, dto.password);
 
     return this.issueLoginResponse(user);
   }
@@ -230,9 +229,8 @@ export class AuthService {
       field: 'email',
       value: forgotPasswordDto.email,
     });
-    if (!user) {
-      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
-    }
+    // Same response whether or not the email exists — don't reveal registered emails.
+    if (!user) return { ok: true };
 
     const jti = randomUUID();
     await this.rmqProducer.send('redis.set', {
@@ -292,6 +290,26 @@ export class AuthService {
     return updatedUser;
   }
 
+  /**
+   * The refresh token must equal the one stored at login (`session:{userId}`): logout deletes it
+   * and a newer login/refresh replaces it, so revoked or rotated tokens are rejected. A Redis/RMQ
+   * outage fails open (logged) so auth stays available.
+   */
+  private async assertRefreshSessionActive(userId: string, refreshToken: string): Promise<void> {
+    let stored: string | null;
+    try {
+      stored = await this.rmqProducer.send<string | null, { key: string }>('redis.get', {
+        key: loginSessionRedisKey(userId),
+      });
+    } catch (error) {
+      this.logger.warn(`Could not verify login session for user ${userId}`, error);
+      return;
+    }
+    if (stored !== refreshToken) {
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+    }
+  }
+
   async refreshTokens(dto: RefreshTokenBodyDto): Promise<LoginResponseDto> {
     let verified: unknown;
     try {
@@ -303,6 +321,7 @@ export class AuthService {
     }
 
     const payload = parseRefreshTokenPayload(verified);
+    await this.assertRefreshSessionActive(payload.sub, dto.refreshToken);
 
     const rows = await this.userService.getUserByField({
       field: 'id',

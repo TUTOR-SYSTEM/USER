@@ -62,6 +62,6 @@ export class UserRpcController {
 
   @MessagePattern('user.changePassword')
   changePassword(@Payload() { userId, ...dto }: { userId: string } & ChangePasswordValues) {
-    return this.userService.changePasswordService(userId, dto as ChangePasswordValues);
+    return this.userService.changePasswordService(userId, dto);
   }
 }
