@@ -201,7 +201,6 @@ export const updateUserSchema = z
       .max(50, { message: 'Relationship must be at most 50 characters' })
       .nullable()
       .optional(),
-    classId: z.string().uuid({ message: 'classId must be uuid ...' }).nullable().optional(),
     gradesId: z.array(z.string().uuid({ message: 'gradesId must contain uuids ...' })).optional(),
     parentId: z.string().uuid({ message: 'parentId must be uuid ...' }).nullable().optional(),
     tutorId: z.string().uuid({ message: 'tutorId must be uuid ...' }).nullable().optional(),
@@ -251,13 +250,6 @@ export const createUserSchema = z
     googleId: z.string().default(''),
     school: z.string().default(''),
     relationship: z.enum(['MOTHER', 'FATHER', '']).default(''),
-    classId: z
-      .array(
-        z
-          .string({ message: 'Class Id must be string ...' })
-          .uuid({ message: 'Class Id must be uuid ...' }),
-      )
-      .default([]),
     gradesId: z
       .array(
         z

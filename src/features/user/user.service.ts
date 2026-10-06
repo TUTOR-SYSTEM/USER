@@ -19,6 +19,21 @@ import type {
 import { checkUuidValid, compareData, hashData } from '@packages/helpers';
 import { ERROR_MESSAGES } from 'src/data/constants';
 
+/** Fields only an admin (`PUT /users/:id`) may change — never via self-update (privilege escalation). */
+const SELF_UPDATE_RESTRICTED_FIELDS = [
+  'role',
+  'isActive',
+  'userCode',
+  'parentId',
+  'tutorId',
+] as const satisfies readonly (keyof UpdateUserDto)[];
+
+function omitPassword<T extends { password?: unknown }>(user: T): Omit<T, 'password'> {
+  const safe: Partial<T> = { ...user };
+  delete safe.password;
+  return safe as Omit<T, 'password'>;
+}
+
 function generateUserCode(): string {
   return randomBytes(3).toString('hex').slice(0, 6).toUpperCase();
 }
@@ -89,9 +104,7 @@ export class UserService {
       throw new BadRequestException(ERROR_MESSAGES.USER_ID_MUST_BE_UUID);
     const user = await this.userRepo.findById(id);
     if (!user) return null;
-    const safeUser: Partial<Pick<User, 'password'>> & Omit<User, 'password'> = { ...user };
-    delete safeUser.password;
-    return safeUser;
+    return omitPassword(user);
   }
 
   // TODO: get users by searchable field
@@ -109,6 +122,11 @@ export class UserService {
 
     const users = await this.userRepo.findByField(userDataFieldDto.field, userDataFieldDto.value);
     return users.map((user) => ({ ...user, role: user.role ?? 'STUDENT' }));
+  }
+
+  /** Same as `getUserByField` but safe to return to clients (no password hash). */
+  async findUsersByFieldPublic(dto: UserDataFieldDto) {
+    return (await this.getUserByField(dto)).map((user) => omitPassword(user));
   }
 
   // TODO: create user, check email/username uniqueness
@@ -163,7 +181,6 @@ export class UserService {
       data: {
         email: user.email,
         fullName: `${user.firstName} ${user.lastName}`.trim(),
-        password: user.password,
       },
     };
   }
@@ -182,7 +199,8 @@ export class UserService {
     }
 
     const hashedPassword = await hashData(password);
-    return this.userRepo.updatePassword(id, hashedPassword);
+    const updated = await this.userRepo.updatePassword(id, hashedPassword);
+    return updated && omitPassword(updated);
   }
 
   // TODO: update user fields by id
@@ -198,7 +216,18 @@ export class UserService {
       throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
 
-    return this.userRepo.update(id, data);
+    // Pre-check unique columns so a clash is a 400, not a raw Postgres 23505 → 500.
+    if (data.email !== undefined && data.email !== user.email) {
+      const taken = await this.getUserByField({ field: 'email', value: data.email });
+      if (taken.length > 0) throw new BadRequestException(ERROR_MESSAGES.EMAIL_EXISTS);
+    }
+    if (data.username !== undefined && data.username !== user.username) {
+      const taken = await this.getUserByField({ field: 'username', value: data.username });
+      if (taken.length > 0) throw new BadRequestException(ERROR_MESSAGES.USERNAME_EXISTS);
+    }
+
+    const updated = await this.userRepo.update(id, data);
+    return updated && omitPassword(updated);
   }
 
   /**
@@ -215,6 +244,9 @@ export class UserService {
     role: string;
     data: UpdateUserDto;
   }) {
+    if (SELF_UPDATE_RESTRICTED_FIELDS.some((field) => data[field] !== undefined)) {
+      throw new BadRequestException(ERROR_MESSAGES.CANNOT_UPDATE_RESTRICTED_FIELDS);
+    }
     if (role === 'STUDENT' && (data.firstName !== undefined || data.lastName !== undefined)) {
       throw new BadRequestException(ERROR_MESSAGES.STUDENT_CANNOT_UPDATE_NAME);
     }
@@ -235,7 +267,8 @@ export class UserService {
       throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
 
-    return this.userRepo.update(id, { isActive: !user.isActive });
+    const updated = await this.userRepo.update(id, { isActive: !user.isActive });
+    return updated && omitPassword(updated);
   }
 
   // TODO: delete user by id, admin only

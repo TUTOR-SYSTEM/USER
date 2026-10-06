@@ -64,12 +64,6 @@ export const USER_SWAGGERS_DATA = {
         example: 'Le Hong Phong High School',
       },
       relationship: { type: 'string', maxLength: 50, nullable: true, example: 'FATHER' },
-      classId: {
-        type: 'string',
-        format: 'uuid',
-        nullable: true,
-        example: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
-      },
       gradesId: {
         type: 'array',
         items: { type: 'string', format: 'uuid' },

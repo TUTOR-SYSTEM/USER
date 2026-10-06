@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, UnauthorizedException } from '
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import type { User } from '@packages/entities/user';
 import type {
   ForgotPasswordDto,
   ForgotPasswordResponseDto,
@@ -16,6 +17,7 @@ import type {
 } from '@packages/entities/auth';
 import {
   compareData,
+  hashData,
   signAccessToken,
   signRefreshToken,
   type JwtRefreshPayload,
@@ -25,7 +27,6 @@ import { UserService } from '../user/user.service';
 import { getJwtTokensConfig } from '@packages/configs/jwt-sign.config';
 import { randomUUID } from 'node:crypto';
 import { checkUuidValid, type JwtUserRole } from '@packages/helpers';
-import { CurrentUser } from '@packages/decorators';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
 
@@ -52,6 +53,7 @@ function parseRefreshTokenPayload(value: unknown): JwtRefreshPayload {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly jwtTokensConfig: JwtTokensConfig;
+  private dummyHash?: Promise<string>;
   constructor(
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
@@ -77,6 +79,64 @@ export class AuthService {
       .catch((error: unknown) =>
         this.logger.warn(`Failed to create login session for user ${userId}`, error),
       );
+  }
+
+  /**
+   * Single generic error for unknown user and wrong password (no account enumeration). A dummy
+   * bcrypt compare runs for unknown users so response time doesn't leak existence either.
+   */
+  private async verifyCredentials(user: User | undefined, password: string): Promise<User> {
+    const hash = user?.password ?? (await (this.dummyHash ??= hashData('dummy-password')));
+    const ok = await compareData(password, hash);
+    if (!user || !ok) throw new BadRequestException(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    return user;
+  }
+
+  /** Signs the access/refresh pair, records the session and builds the login response. */
+  private async issueLoginResponse(user: User): Promise<LoginResponseDto> {
+    if (user.isActive === false) {
+      throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
+    }
+    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
+    const [accessToken, refreshToken] = await Promise.all([
+      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
+      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
+    ]);
+
+    this.emitLoginSessionCreated(user.id, refreshToken);
+
+    return {
+      accessToken,
+      refreshToken,
+      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
+    };
+  }
+
+  /** Finds the user by email or auto-registers them as STUDENT (Google/Facebook sign-in). */
+  private async findOrCreateOAuthUser(profile: {
+    email: string;
+    firstName: string;
+    lastName: string;
+  }): Promise<User> {
+    const [existing] = await this.userService.getUserByField({
+      field: 'email',
+      value: profile.email,
+    });
+    if (existing) return existing;
+
+    await this.userService.createUserService({
+      email: profile.email,
+      password: randomUUID(),
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      role: 'STUDENT',
+    });
+    const [created] = await this.userService.getUserByField({
+      field: 'email',
+      value: profile.email,
+    });
+    if (!created) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
+    return created;
   }
 
   // TODO: register tutor ...
@@ -129,33 +189,13 @@ export class AuthService {
 
   // TODO:  login by email + password ...
   async loginService(loginDto: LoginDto): Promise<LoginResponseDto> {
-    const [user] = await this.userService.getUserByField({
+    const [found] = await this.userService.getUserByField({
       field: 'email',
       value: loginDto.email,
     });
+    const user = await this.verifyCredentials(found, loginDto.password);
 
-    if (!user) {
-      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
-    }
-
-    const isPasswordOk = await compareData(loginDto.password, user.password);
-    if (!isPasswordOk) {
-      throw new BadRequestException(ERROR_MESSAGES.INVALID_PASSWORD);
-    }
-
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(user);
   }
 
   // TODO: login with userCode + password ...
@@ -165,103 +205,19 @@ export class AuthService {
       value: dto.userCode,
     });
 
-    const user = rows.find((u) => u.role === dto.role);
-    if (!user) {
-      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
-    }
-    const isPasswordOk = await compareData(dto.password, user.password);
-    if (!isPasswordOk) {
-      throw new BadRequestException(ERROR_MESSAGES.INVALID_PASSWORD);
-    }
+    const found = rows.find((u) => u.role === dto.role);
+    const user = await this.verifyCredentials(found, dto.password);
 
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(user);
   }
 
   // TODO: login with google account ...
   async facebookLoginService(profile: FacebookProfile): Promise<LoginResponseDto> {
-    const rows = await this.userService.getUserByField({ field: 'email', value: profile.email });
-    let user = rows[0];
-    if (!user) {
-      await this.userService.createUserService({
-        email: profile.email,
-        password: randomUUID(),
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-        role: 'STUDENT',
-      });
-      const createdRows = await this.userService.getUserByField({
-        field: 'email',
-        value: profile.email,
-      });
-      user = createdRows[0];
-      if (!user) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
-    }
-
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(await this.findOrCreateOAuthUser(profile));
   }
 
   async googleLoginService(profile: GoogleProfile): Promise<LoginResponseDto> {
-    const rows = await this.userService.getUserByField({
-      field: 'email',
-      value: profile.email,
-    });
-
-    let user = rows[0];
-    if (!user) {
-      await this.userService.createUserService({
-        email: profile.email,
-        password: randomUUID(),
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-        role: 'STUDENT',
-      });
-      const createdRows = await this.userService.getUserByField({
-        field: 'email',
-        value: profile.email,
-      });
-      user = createdRows[0];
-      if (!user) {
-        throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
-      }
-    }
-
-    const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
-    ]);
-
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(await this.findOrCreateOAuthUser(profile));
   }
 
   // Reset token = a random jti stored in third-service's Redis (userId, 5 min TTL); the email
@@ -273,9 +229,8 @@ export class AuthService {
       field: 'email',
       value: forgotPasswordDto.email,
     });
-    if (!user) {
-      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
-    }
+    // Same response whether or not the email exists — don't reveal registered emails.
+    if (!user) return { ok: true };
 
     const jti = randomUUID();
     await this.rmqProducer.send('redis.set', {
@@ -335,6 +290,26 @@ export class AuthService {
     return updatedUser;
   }
 
+  /**
+   * The refresh token must equal the one stored at login (`session:{userId}`): logout deletes it
+   * and a newer login/refresh replaces it, so revoked or rotated tokens are rejected. A Redis/RMQ
+   * outage fails open (logged) so auth stays available.
+   */
+  private async assertRefreshSessionActive(userId: string, refreshToken: string): Promise<void> {
+    let stored: string | null;
+    try {
+      stored = await this.rmqProducer.send<string | null, { key: string }>('redis.get', {
+        key: loginSessionRedisKey(userId),
+      });
+    } catch (error) {
+      this.logger.warn(`Could not verify login session for user ${userId}`, error);
+      return;
+    }
+    if (stored !== refreshToken) {
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+    }
+  }
+
   async refreshTokens(dto: RefreshTokenBodyDto): Promise<LoginResponseDto> {
     let verified: unknown;
     try {
@@ -346,6 +321,7 @@ export class AuthService {
     }
 
     const payload = parseRefreshTokenPayload(verified);
+    await this.assertRefreshSessionActive(payload.sub, dto.refreshToken);
 
     const rows = await this.userService.getUserByField({
       field: 'id',
@@ -357,25 +333,11 @@ export class AuthService {
     }
 
     const user = rows[0];
-    const accessPayload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
-    const refreshPayload = { sub: user.id, email: user.email };
-    const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, accessPayload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, refreshPayload, this.jwtTokensConfig),
-    ]);
-
-    // Renew the session in Redis with the new refresh token
-    this.emitLoginSessionCreated(user.id, refreshToken);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
-    };
+    return this.issueLoginResponse(user);
   }
 
   // Logout: delete the session from Redis so the gateway rejects subsequent requests with 401
-  logoutService(@CurrentUser() user: Record<string, string>) {
+  logoutService(user: Record<string, string>) {
     if (!user.id || !checkUuidValid({ data: user.id })) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_USER_ID);
     }

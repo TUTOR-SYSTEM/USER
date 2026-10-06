@@ -9,6 +9,10 @@ export const ERROR_TRANSLATIONS = {
   EMAIL_EXISTS: { vi: 'Email đã tồn tại', en: 'Email already exists' },
   USERNAME_EXISTS: { vi: 'Tên đăng nhập đã tồn tại', en: 'Username already exists' },
   USER_NOT_FOUND: { vi: 'Không tìm thấy người dùng', en: 'User not found' },
+  INVALID_CREDENTIALS: {
+    vi: 'Thông tin đăng nhập không đúng',
+    en: 'Invalid credentials',
+  },
   INVALID_PASSWORD: { vi: 'Mật khẩu không đúng', en: 'Invalid password' },
   INVALID_RESET_PASSWORD_TOKEN: {
     vi: 'Mã đặt lại mật khẩu không hợp lệ',
@@ -225,6 +229,12 @@ export const ERROR_TRANSLATIONS = {
     vi: 'Học sinh không được tự thay đổi họ tên',
     en: 'Students are not allowed to update their own first/last name',
   },
+
+  CANNOT_UPDATE_RESTRICTED_FIELDS: {
+    vi: 'Bạn không được tự thay đổi các trường này (vai trò, trạng thái, mã, liên kết)',
+    en: 'You are not allowed to update restricted fields (role, status, code, links) on your own account',
+  },
+  ACCOUNT_DEACTIVATED: { vi: 'Tài khoản đã bị vô hiệu hóa', en: 'Account has been deactivated' },
 
   // Upload
   KEY_QUERY_PARAM_REQUIRED: {

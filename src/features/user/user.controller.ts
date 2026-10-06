@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -10,7 +21,8 @@ import {
 } from '@nestjs/swagger';
 import { StatusCodes } from 'http-status-codes';
 import { ZodValidationPipe } from '@packages/pipes';
-import { CurrentUser } from '@packages/decorators';
+import { CurrentUser, Roles } from '@packages/decorators';
+import { RolesGuard } from '@packages/guards';
 import {
   changePasswordSchema,
   getUsersQuerySchema,
@@ -73,6 +85,8 @@ export class UserController {
     return await this.userService.getDetailUserService({ id: user.id });
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Get('/get-by-field')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
@@ -89,9 +103,11 @@ export class UserController {
     @Query(new ZodValidationPipe(dataFieldSchema))
     dataFieldDto: UserDataFieldDto,
   ): Promise<unknown> {
-    return await this.userService.getUserByField(dataFieldDto);
+    return await this.userService.findUsersByFieldPublic(dataFieldDto);
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Post()
   @HttpCode(StatusCodes.CREATED)
   @ApiOperation({
@@ -133,6 +149,8 @@ export class UserController {
     });
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Put('/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
@@ -153,6 +171,8 @@ export class UserController {
     return await this.userService.updateUserService({ id: id, data: updateUserDto });
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Put('/:id/status')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
@@ -168,6 +188,8 @@ export class UserController {
     return await this.userService.updateStatusUserService({ id: id });
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Delete('/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({

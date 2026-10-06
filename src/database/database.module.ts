@@ -1,4 +1,4 @@
-import { Global, Logger, Module } from '@nestjs/common';
+import { Global, Inject, Logger, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
@@ -7,9 +7,10 @@ import * as schema from './schema';
 import { validateRequiredEnvs } from '@packages/helpers';
 
 // esModuleInterop wraps the schema in a null-prototype `default` namespace that drizzle's is() chokes on.
-const { default: _default, ...tables } = schema as Record<string, unknown>;
+const tables = Object.fromEntries(Object.entries(schema).filter(([key]) => key !== 'default'));
 
 export const DRIZZLE = 'DRIZZLE';
+const PG_CLIENT = 'PG_CLIENT';
 export const DATABASE_ENVS = [
   'POSTGRES_HOST',
   'POSTGRES_PORT',
@@ -21,11 +22,9 @@ export const DATABASE_ENVS = [
 @Module({
   providers: [
     {
-      provide: DRIZZLE,
+      provide: PG_CLIENT,
       inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => {
-        const logger = new Logger(DatabaseModule.name);
-
+      useFactory: (configService: ConfigService) => {
         // Nếu không dùng DATABASE_URL thì validate từng biến
         const databaseUrl = configService.get<string>('DATABASE_URL')?.trim();
 
@@ -48,14 +47,19 @@ export const DATABASE_ENVS = [
             return url.toString();
           })();
 
-        const client = postgres(connectionString);
-
+        return postgres(connectionString);
+      },
+    },
+    {
+      provide: DRIZZLE,
+      inject: [PG_CLIENT],
+      useFactory: async (client: ReturnType<typeof postgres>) => {
+        const logger = new Logger(DatabaseModule.name);
         const MAX_RETRIES = 3;
         const RETRY_DELAY_MS = 2000;
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           try {
-            logger.log('this connection:', databaseUrl);
             await client`SELECT 1`;
             logger.log('✅ PostgreSQL connected.');
             return drizzle(client, { schema: tables });
@@ -79,4 +83,10 @@ export const DATABASE_ENVS = [
   ],
   exports: [DRIZZLE],
 })
-export class DatabaseModule {}
+export class DatabaseModule implements OnApplicationShutdown {
+  constructor(@Inject(PG_CLIENT) private readonly client: ReturnType<typeof postgres>) {}
+
+  async onApplicationShutdown() {
+    await this.client.end({ timeout: 5 });
+  }
+}

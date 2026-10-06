@@ -63,6 +63,5 @@ export type CreateUserResponseDto = {
   data: {
     email: string;
     fullName: string;
-    password: string;
   };
 };
