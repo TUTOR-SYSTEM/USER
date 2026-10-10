@@ -24,7 +24,7 @@ services:
     image: postgres:16-alpine
     container_name: backends-postgres
     environment:
-      - POSTGRES_DB=user_db
+      - POSTGRES_DB=backends_db
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
