@@ -203,10 +203,6 @@ export class AdminService {
     }
   }
 
-  private label(role: ManagedRole): string {
-    return role === 'TUTOR' ? 'Tutor' : 'Student';
-  }
-
   /** The DB column stores subjects as a comma-joined string; the API exposes an array. */
   private joinSubjects(subjects?: string[]): string | undefined {
     if (!subjects || subjects.length === 0) return undefined;

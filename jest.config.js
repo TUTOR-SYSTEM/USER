@@ -2,6 +2,7 @@
 module.exports = {
   moduleFileExtensions: ['js', 'json', 'ts'],
   rootDir: '.',
+  roots: ['<rootDir>/test'],
   testRegex: '.*\\.spec\\.ts$',
   transform: {
     '^.+\\.(t|j)s$': [
@@ -30,6 +31,7 @@ module.exports = {
   coverageProvider: 'v8',
   testEnvironment: 'node',
   moduleNameMapper: {
+    '^@packages/database/(.*)$': '<rootDir>/src/database/$1',
     '^@packages/(.*)$': '<rootDir>/src/packages/$1',
     '^src/(.*)$': '<rootDir>/src/$1',
   },

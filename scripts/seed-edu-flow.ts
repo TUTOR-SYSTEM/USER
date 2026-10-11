@@ -96,6 +96,7 @@ async function main() {
     '/classes',
     {
       name: 'Lớp Toán 10A - ' + Date.now(),
+      code: 'SEED' + Date.now().toString().slice(-6),
       subject: 'Toán',
       tutorId,
       startTime: new Date().toISOString(),
@@ -121,7 +122,7 @@ async function main() {
 
   // 6. Lesson (curriculumId and chapterId are query params)
   const lesson = await post<{ id: string }>(
-    `/lesson?curriculumId=${curriculum.id}&chapterId=${chapter.id}`,
+    `/curriculum/lessons?curriculumId=${curriculum.id}&chapterId=${chapter.id}`,
     {
       title: 'Bài 1: Mệnh đề',
       description: 'Khái niệm mệnh đề, mệnh đề phủ định',
@@ -166,6 +167,35 @@ async function main() {
     token,
   );
   log('exercise', exercise.id);
+
+  // 9. Schedule + tuition (fixtures for the test-monitor; both are plain POSTs)
+  const schedule = await post<{ id: string }>(
+    '/schedules',
+    { classId: cls.id, dayOfWeek: 'MONDAY', startTime: '08:00', endTime: '09:30', format: 'ONLINE' },
+    token,
+  );
+  log('schedule', schedule.id);
+
+  const studentsRes = await fetch(`${BASE}/admin/students?limit=1`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const tuitionStudentId = (await studentsRes.json()).data.data[0]?.id as string | undefined;
+  if (tuitionStudentId) {
+    const tuition = await post<{ id: string }>(
+      '/tuitions',
+      { classId: cls.id, studentId: tuitionStudentId, amount: 1000000, note: "seed" },
+      token,
+    );
+    log('tuition', tuition.id);
+  }
+
+  // 10. Notification (fixture for /notifications/:id)
+  const notification = await post<{ id: string }>(
+    '/notifications',
+    { type: 'SYSTEM', title: 'Thông báo mẫu', content: 'Thông báo mẫu cho test-monitor' },
+    token,
+  );
+  log('notification', notification.id);
 
   console.log('\n── Done ────────────────────────────────────────────────────\n');
 }
