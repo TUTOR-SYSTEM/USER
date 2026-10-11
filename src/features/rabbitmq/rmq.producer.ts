@@ -162,7 +162,7 @@ export class RmqProducer implements OnModuleDestroy {
 
           throw new HttpException(
             {
-              message: payload.message ?? 'Message queue service unavailable',
+              message: payload.message,
               errors: payload.errors,
               serviceName: payload.serviceName,
               isTimeout,

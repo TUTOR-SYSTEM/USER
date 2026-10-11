@@ -105,25 +105,10 @@ bun podman:up / podman:down / podman:logs
 
 ## Project Structure
 
-```
-src/
-├── main.ts                       # Bootstrap: CORS, interceptors, filters, RMQ listener (user_queue), listen
-├── app.module.ts                 # Root module (imports all feature modules)
-├── app.controller.ts / app.service.ts   # Health-check
-├── database/
-│   ├── database.module.ts        # Global Drizzle ORM provider — imports ./schema
-│   └── schema.ts                 # Verbatim mirror of gateway's users/grades (gateway stays
-│                                  # canonical + owns migrations; mirror exists so Docker builds
-│                                  # without ../gateway). Import via `@packages/database/schema`.
-├── features/
-│   ├── auth/          # HTTP controller + auth.rpc.controller.ts (@MessagePattern responder) + service
-│   ├── user/           # HTTP controller + user.rpc.controller.ts + service + repository
-│   ├── admin/          # Generic managed-user CRUD (/admin/students, /admin/tutors) + admin.rpc.controller.ts
-│   ├── student/        # Student-specific surface (parent linking + profile) + student.rpc.controller.ts
-│   └── rabbitmq/        # RmqModule + RmqProducer for outbound RPC to tutor/third-service (copy of gateway's)
-└── packages/            # Shared utilities (import via @packages/*): configs, decorators, entities,
-                          # filters, guards, helpers, interceptor, interfaces, pipes, strategy
-```
+Gotchas:
+- `database/schema.ts` is a verbatim mirror of gateway's users/grades. Gateway stays canonical and owns migrations; the mirror lets Docker builds run without `../gateway`. Import via `@packages/database/schema`.
+- Each feature is an HTTP controller + `*.rpc.controller.ts` (the `@MessagePattern` responder) + service. `admin` is generic managed-user CRUD (`/admin/students`, `/admin/tutors`); `student` covers parent linking and profile.
+- `features/rabbitmq/` is a copy of gateway's RmqModule, used for outbound RPC to tutor-service and third-service.
 
 ## Code Conventions
 
