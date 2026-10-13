@@ -1,13 +1,24 @@
+import { randomBytes, randomInt } from 'node:crypto';
+
+/** Cryptographically secure random code (userCode / student code). */
 export function generateCode(length = 6): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let result = '';
 
   for (let i = 0; i < length; i++) {
-    const randomIndex = Math.floor(Math.random() * chars.length);
-    result += chars[randomIndex];
+    result += chars[randomInt(chars.length)];
   }
 
   return result;
+}
+
+/**
+ * Cryptographically secure random password for accounts created without a user-chosen one.
+ * The plaintext is never returned or logged — it is hashed and stored; the account is reached
+ * through the password-reset flow.
+ */
+export function generateRandomPassword(bytes = 24): string {
+  return randomBytes(bytes).toString('base64url');
 }
 
 export const checkUuidValid = ({ data }: { data: string }): boolean => {

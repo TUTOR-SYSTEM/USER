@@ -23,10 +23,14 @@ const SENSITIVE_KEYS = [
   'password',
   'newPassword',
   'oldPassword',
+  'currentPassword',
   'confirmPassword',
   'token',
   'accessToken',
   'refreshToken',
+  // Password-reset token (jti) — usable to set a new password until it expires.
+  'jti',
+  'resetToken',
 ];
 
 function readHeader(headers: Record<string, unknown> | undefined, key: string): string | undefined {

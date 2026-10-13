@@ -1,4 +1,10 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { Inject } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
@@ -12,8 +18,21 @@ import type {
 } from '@packages/entities/student';
 import type { JwtGuardUser } from '../../packages/guards/jwt-auth.guard';
 import { StudentRepository } from './student.repository';
-import { generateCode, hashData } from '@packages/helpers';
+import { checkUuidValid, generateCode, generateRandomPassword, hashData } from '@packages/helpers';
 import { randomUUID } from 'node:crypto';
+
+/** Response shape never carries the password hash (repository `.returning()` returns full rows). */
+function omitPassword<T extends { password?: unknown }>(row: T): Omit<T, 'password'> {
+  const safe: Partial<T> = { ...row };
+  delete safe.password;
+  return safe as Omit<T, 'password'>;
+}
+
+function assertStudentId(id: string): void {
+  if (!id || !checkUuidValid({ data: id })) {
+    throw new BadRequestException(ERROR_MESSAGES.USER_ID_MUST_BE_UUID);
+  }
+}
 
 @Injectable()
 export class StudentService {
@@ -98,9 +117,9 @@ export class StudentService {
     // 2. Split the student's full name into the first/last name columns `users` expects.
     const { firstName, lastName } = this.splitName(dto.studentName);
 
-    // 3. Generate a unique username + default password for the new student login.
+    // 3. Generate a unique username + a random (never returned) password for the new student.
     const studentUsername = await this.generateUsernameFromName(firstName, lastName);
-    const hashedStudentPassword = await hashData('Student@123456');
+    const hashedStudentPassword = await hashData(generateRandomPassword());
 
     // 4. If parent info was submitted, create the PARENT user first so it can be linked below.
     let parentId: string | null = null;
@@ -110,7 +129,7 @@ export class StudentService {
       );
       const parentUsername = await this.generateUsernameFromName(parentFirstName, parentLastName);
       const parentCode = await this.generateUniqueCode();
-      const hashedParentPassword = await hashData('Parent@123456');
+      const hashedParentPassword = await hashData(generateRandomPassword());
 
       const parent = await this.repo.createParent({
         id: randomUUID(),
@@ -146,7 +165,7 @@ export class StudentService {
       tutorId: currentUser.id,
     });
 
-    return student;
+    return omitPassword(student);
   }
 
   async findAll(query: GetStudentsQueryDto) {
@@ -198,6 +217,7 @@ export class StudentService {
   }
 
   async findById(id: string) {
+    assertStudentId(id);
     const user = await this.repo.findById({ id });
     if (!user) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
 
@@ -249,6 +269,7 @@ export class StudentService {
   }
 
   async update(id: string, dto: UpdateStudentDto) {
+    assertStudentId(id);
     const student = await this.repo.findById({ id });
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
 
@@ -305,7 +326,7 @@ export class StudentService {
         // No parent linked yet — create one (mirrors create flow)
         const parentUserId = randomUUID();
         const parentCode = await this.generateUniqueCode();
-        const hashedParentPassword = await hashData('Parent@123456');
+        const hashedParentPassword = await hashData(generateRandomPassword());
         const resolvedParentEmail = dto.parentEmail ?? '';
         const { firstName, lastName } = this.splitName(dto.parentName);
         const parentUsername = await this.generateUsernameFromName(firstName, lastName);
@@ -338,10 +359,11 @@ export class StudentService {
       }
     }
 
-    return updated;
+    return omitPassword(updated);
   }
 
   async delete(id: string) {
+    assertStudentId(id);
     const student = await this.repo.findById({ id });
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     await this.repo.delete({ id });

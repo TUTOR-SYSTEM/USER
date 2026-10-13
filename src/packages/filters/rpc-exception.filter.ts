@@ -1,4 +1,11 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { throwError } from 'rxjs';
 
 const SERVICE_NAME = 'user-service';
@@ -23,6 +30,8 @@ export interface RpcErrorPayload {
  */
 @Catch()
 export class RpcExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(RpcExceptionFilter.name);
+
   catch(exception: unknown, _host: ArgumentsHost) {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
@@ -46,12 +55,18 @@ export class RpcExceptionFilter implements ExceptionFilter {
       );
     }
 
-    const message = exception instanceof Error ? exception.message : 'Internal server error';
+    // Non-HTTP errors (Drizzle/Postgres, driver, programming errors) can carry SQL text and bound
+    // parameters (emails, password hashes) in their message. Log the real error server-side and
+    // return a generic message to the caller.
+    this.logger.error(
+      'Unhandled RPC exception',
+      exception instanceof Error ? exception.stack : String(exception),
+    );
     return throwError(
       () =>
         ({
           statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-          message,
+          message: 'Internal server error',
           serviceName: SERVICE_NAME,
         }) satisfies RpcErrorPayload,
     );

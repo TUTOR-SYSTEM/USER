@@ -13,14 +13,18 @@ import type {
   UpdateManagedUserDto,
   UpdateManagedStudentDto,
 } from '@packages/entities/admin';
-import { checkUuidValid, generateCode, hashData } from '@packages/helpers';
+import { checkUuidValid, generateCode, hashData, loginSessionRedisKey } from '@packages/helpers';
+import { RmqProducer } from '../rabbitmq/rmq.producer';
 import { AdminRepository, type ManagedRole } from './admin.repository';
 
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
-  constructor(private readonly adminRepository: AdminRepository) {}
+  constructor(
+    private readonly adminRepository: AdminRepository,
+    private readonly rmqProducer: RmqProducer,
+  ) {}
 
   // ─── Tutors ────────────────────────────────────────────────────────
   createTutor(dto: CreateManagedUserDto) {
@@ -182,18 +186,32 @@ export class AdminService {
         role === 'TUTOR' ? ERROR_MESSAGES.TUTOR_NOT_FOUND : ERROR_MESSAGES.STUDENT_NOT_FOUND,
       );
     }
+    // A deactivated account must not keep its gateway session alive.
+    if (dto.isActive === false) await this.revokeLoginSession(id);
     return this.mapRow(updated);
   }
 
   private async deleteManagedUser(id: string, role: ManagedRole) {
     this.assertUuid(id);
-    const deleted = await this.adminRepository.deleteByIdAndRole(id, role);
-    if (!deleted) {
-      throw new NotFoundException(
+    const notFound = () =>
+      new NotFoundException(
         role === 'TUTOR' ? ERROR_MESSAGES.TUTOR_NOT_FOUND : ERROR_MESSAGES.STUDENT_NOT_FOUND,
       );
+    const existing = await this.adminRepository.findByIdAndRole(id, role);
+    if (!existing) throw notFound();
+    // users.tutor_id / users.parent_id cascade on delete — refuse while students are linked.
+    if ((await this.adminRepository.countLinkedUsers(id)) > 0) {
+      throw new ConflictException(ERROR_MESSAGES.USER_HAS_LINKED_ACCOUNTS);
     }
+    const deleted = await this.adminRepository.deleteByIdAndRole(id, role);
+    if (!deleted) throw notFound();
+    await this.revokeLoginSession(id);
     return { id: deleted.id };
+  }
+
+  /** Deletes `session:{userId}` so the gateway rejects the user's existing access tokens. */
+  private async revokeLoginSession(userId: string): Promise<void> {
+    await this.rmqProducer.emit('redis.del', { keys: [loginSessionRedisKey(userId)] });
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────

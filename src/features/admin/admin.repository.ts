@@ -133,6 +133,15 @@ export class AdminRepository {
     return row ?? null;
   }
 
+  /** Accounts pointing at `id` as tutor or parent (they would be cascade-deleted with it). */
+  async countLinkedUsers(id: string): Promise<number> {
+    const [row] = await this.db
+      .select({ total: count() })
+      .from(users)
+      .where(or(eq(users.tutorId, id), eq(users.parentId, id)));
+    return Number(row?.total ?? 0);
+  }
+
   async deleteByIdAndRole(id: string, role: ManagedRole) {
     const [row] = await this.db
       .delete(users)

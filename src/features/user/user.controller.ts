@@ -36,7 +36,7 @@ import {
   updateUserSchema,
   type UserDataFieldDto,
 } from '@packages/entities/user';
-import { UserService } from './user.service';
+import { actorFrom, UserService } from './user.service';
 import { USER_SWAGGER_MESSAGES } from 'src/data/swaggers/messages';
 import { USER_SWAGGERS_DATA } from 'src/data/swaggers/data/user.swagger';
 
@@ -48,6 +48,8 @@ type GetUsersResponse = Awaited<ReturnType<UserService['getUsersService']>>;
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Get()
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
@@ -82,7 +84,7 @@ export class UserController {
     description: USER_SWAGGER_MESSAGES.GET_USER_SUCCESSFULLY,
   })
   async getDetailUserController(@CurrentUser() user: Record<string, string>) {
-    return await this.userService.getDetailUserService({ id: user.id });
+    return await this.userService.getDetailUserService({ id: user.id, actor: actorFrom(user) });
   }
 
   @UseGuards(RolesGuard)
@@ -144,7 +146,7 @@ export class UserController {
   ) {
     return await this.userService.updateOwnProfileService({
       id: user.id,
-      role: user.role,
+      actor: actorFrom(user),
       data: updateUserDto,
     });
   }
@@ -164,11 +166,16 @@ export class UserController {
     description: USER_SWAGGER_MESSAGES.UPDATE_USER_SUCCESSFULLY,
   })
   async updateUserByAdminController(
+    @CurrentUser() user: Record<string, string>,
     @Param('id') id: string,
     @Body(new ZodValidationPipe<UpdateUserDto>(updateUserSchema))
     updateUserDto: UpdateUserDto,
   ) {
-    return await this.userService.updateUserService({ id: id, data: updateUserDto });
+    return await this.userService.updateUserService({
+      id: id,
+      data: updateUserDto,
+      actor: actorFrom(user),
+    });
   }
 
   @UseGuards(RolesGuard)
@@ -184,8 +191,11 @@ export class UserController {
     status: StatusCodes.OK,
     description: USER_SWAGGER_MESSAGES.UPDATE_USER_STATUS_SUCCESSFULLY,
   })
-  async updateStatusUserController(@Param('id') id: string) {
-    return await this.userService.updateStatusUserService({ id: id });
+  async updateStatusUserController(
+    @CurrentUser() user: Record<string, string>,
+    @Param('id') id: string,
+  ) {
+    return await this.userService.updateStatusUserService({ id: id, actor: actorFrom(user) });
   }
 
   @UseGuards(RolesGuard)
@@ -201,8 +211,11 @@ export class UserController {
     status: StatusCodes.OK,
     description: USER_SWAGGER_MESSAGES.DELETE_USER_SUCCESSFULLY,
   })
-  async deleteUserByAdminController(@Param('id') id: string) {
-    return await this.userService.deleteUserByAdminService({ id: id });
+  async deleteUserByAdminController(
+    @CurrentUser() user: Record<string, string>,
+    @Param('id') id: string,
+  ) {
+    return await this.userService.deleteUserByAdminService({ id: id, actor: actorFrom(user) });
   }
 
   @Post('change-password')
