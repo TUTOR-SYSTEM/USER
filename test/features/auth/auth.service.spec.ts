@@ -111,7 +111,7 @@ describe('AuthService', () => {
       await expect(
         service.loginService({ email: 'student@example.test', password: 'wrong' } as never),
       ).rejects.toMatchObject({
-        constructor: BadRequestException,
+        constructor: UnauthorizedException,
         message: ERROR_MESSAGES.INVALID_CREDENTIALS,
       });
       expect(rmq.send).not.toHaveBeenCalled();
@@ -122,7 +122,10 @@ describe('AuthService', () => {
 
       await expect(
         service.loginService({ email: 'nobody@example.test', password: 'whatever' } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({
+        constructor: UnauthorizedException,
+        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
+      });
     });
 
     it('rejects a deactivated account even with the correct password', async () => {
@@ -186,7 +189,10 @@ describe('AuthService', () => {
           role: 'TUTOR',
           password: 'correct-password',
         } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({
+        constructor: UnauthorizedException,
+        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
+      });
     });
 
     it('rejects an unknown user code', async () => {
@@ -198,7 +204,10 @@ describe('AuthService', () => {
           role: 'STUDENT',
           password: 'x',
         } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({
+        constructor: UnauthorizedException,
+        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
+      });
     });
   });
 

@@ -88,7 +88,7 @@ export class AuthService {
   private async verifyCredentials(user: User | undefined, password: string): Promise<User> {
     const hash = user?.password ?? (await (this.dummyHash ??= hashData('dummy-password')));
     const ok = await compareData(password, hash);
-    if (!user || !ok) throw new BadRequestException(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    if (!user || !ok) throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
     return user;
   }
 
