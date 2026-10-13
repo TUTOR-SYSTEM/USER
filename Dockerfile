@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/root/.npm \
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production \
-    PORT=4002 \
+    PORT=4001 \
     USER_QUEUE=user_queue \
     TUTOR_QUEUE=tutor_queue \
     THIRD_QUEUE=third_queue
@@ -38,5 +38,5 @@ COPY --chown=node:node package.json ./
 # - GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_CALLBACK_URL, GOOGLE_OAUTH_REDIRECT_URL
 
 USER node
-EXPOSE 4002
+EXPOSE 4001
 CMD ["node", "dist/main"]
