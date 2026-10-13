@@ -127,6 +127,23 @@ export class UserRepository {
     await this.db.delete(users).where(eq(users.id, id));
   }
 
+  async countActiveAdmins(): Promise<number> {
+    const [row] = await this.db
+      .select({ total: count() })
+      .from(users)
+      .where(and(eq(users.role, 'ADMIN'), eq(users.isActive, true)));
+    return Number(row?.total ?? 0);
+  }
+
+  /** Accounts that point at `id` as their tutor or parent — deleting `id` would cascade to them. */
+  async countLinkedUsers(id: string): Promise<number> {
+    const [row] = await this.db
+      .select({ total: count() })
+      .from(users)
+      .where(or(eq(users.tutorId, id), eq(users.parentId, id)));
+    return Number(row?.total ?? 0);
+  }
+
   async findGradesByUser(userId: string) {
     const [user] = await this.db
       .select({ gradesId: users.gradesId })

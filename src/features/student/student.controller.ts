@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -10,7 +21,8 @@ import {
 } from '@nestjs/swagger';
 import { StatusCodes } from 'http-status-codes';
 import { ZodValidationPipe } from '@packages/pipes';
-import { CurrentUser } from '@packages/decorators';
+import { CurrentUser, Roles } from '@packages/decorators';
+import { RolesGuard } from '@packages/guards';
 import {
   createStudentSchema,
   type CreateStudentDto,
@@ -22,8 +34,14 @@ import {
 import type { JwtGuardUser } from '../../packages/guards/jwt-auth.guard';
 import { StudentService } from './student.service';
 
+/**
+ * Every route is limited to staff (ADMIN/TUTOR); the list is ADMIN-only and update/delete are
+ * ADMIN-only, matching the RPC rule that only an admin or the user themself may change a user.
+ */
 @ApiTags('Students')
 @ApiBearerAuth('access-token')
+@UseGuards(RolesGuard)
+@Roles('ADMIN', 'TUTOR')
 @Controller('students')
 export class StudentController {
   constructor(private readonly studentService: StudentService) {}
@@ -110,6 +128,7 @@ export class StudentController {
   }
 
   @Get()
+  @Roles('ADMIN')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'List students', description: 'Get paginated list of students' })
   @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
@@ -212,6 +231,7 @@ export class StudentController {
   }
 
   @Put(':id')
+  @Roles('ADMIN')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Update student' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
@@ -256,6 +276,7 @@ export class StudentController {
   }
 
   @Delete(':id')
+  @Roles('ADMIN')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Delete student' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })

@@ -7,12 +7,31 @@ import type {
   UpdateUserDto,
   UserDataFieldDto,
 } from '@packages/entities/user';
-import { UserService } from './user.service';
+import { UserActor, UserService } from './user.service';
+
+/** Caller identity the gateway forwards with every admin/tutor-scoped call. */
+interface RpcActorPayload {
+  actorId?: string;
+  actorRole?: string;
+}
+
+/**
+ * Splits the caller identity off the payload so it never reaches the data written to the DB.
+ * A missing `actorId`/`actorRole` becomes an empty identity, which the service rejects (403).
+ */
+function splitActor<T extends RpcActorPayload>(payload: T) {
+  const rest: Partial<T> = { ...payload };
+  delete rest.actorId;
+  delete rest.actorRole;
+  const actor: UserActor = { id: payload.actorId ?? '', role: payload.actorRole ?? '' };
+  return { actor, rest: rest as Omit<T, keyof RpcActorPayload> };
+}
 
 /**
  * Message-pattern mirror of `UserController` — reached only by the gateway's `RmqProducer`
- * over `user_queue` (`user.*` patterns). Delegates to the same, unmodified `UserService` the
- * HTTP controller uses; no business logic lives here.
+ * over `user_queue` (`user.*` patterns). Delegates to the same `UserService` the HTTP controller
+ * uses; no business logic lives here. Authorization is enforced in the service against the
+ * forwarded actor, not by trusting the target id in the payload.
  */
 @Controller()
 export class UserRpcController {
@@ -24,8 +43,13 @@ export class UserRpcController {
   }
 
   @MessagePattern('user.getDetailUser')
-  getDetailUser(@Payload() { userId }: { userId: string }) {
-    return this.userService.getDetailUserService({ id: userId });
+  getDetailUser(@Payload() payload: { userId: string; expectedRole?: string } & RpcActorPayload) {
+    const { actor, rest } = splitActor(payload);
+    return this.userService.getDetailUserService({
+      id: rest.userId,
+      actor,
+      expectedRole: rest.expectedRole,
+    });
   }
 
   @MessagePattern('user.getUserByField')
@@ -38,26 +62,41 @@ export class UserRpcController {
     return this.userService.createUserService(dto);
   }
 
+  /** Self-update or admin edit of a student (`PUT /students/:id`). `role` is ignored (see service). */
   @MessagePattern('user.updateUser')
   updateUser(
-    @Payload() { userId, role, ...data }: { userId: string; role: string } & UpdateUserDto,
+    @Payload() payload: { userId: string; role?: string } & RpcActorPayload & UpdateUserDto,
   ) {
-    return this.userService.updateOwnProfileService({ id: userId, role, data });
+    const { actor, rest } = splitActor(payload);
+    const { userId, ...data } = rest;
+    // The gateway also forwards the caller's `role` on self-updates; it is not a writable field.
+    delete data.role;
+    return this.userService.updateOwnProfileService({ id: userId, actor, data });
   }
 
   @MessagePattern('user.updateUserByAdmin')
-  updateUserByAdmin(@Payload() { id, ...data }: { id: string } & UpdateUserDto) {
-    return this.userService.updateUserService({ id, data });
+  updateUserByAdmin(
+    @Payload() payload: { id: string; expectedRole?: string } & RpcActorPayload & UpdateUserDto,
+  ) {
+    const { actor, rest } = splitActor(payload);
+    const { id, expectedRole, ...data } = rest;
+    return this.userService.updateUserService({ id, data, actor, expectedRole });
   }
 
   @MessagePattern('user.updateStatusUser')
-  updateStatusUser(@Payload() { id }: { id: string }) {
-    return this.userService.updateStatusUserService({ id });
+  updateStatusUser(@Payload() payload: { id: string } & RpcActorPayload) {
+    const { actor, rest } = splitActor(payload);
+    return this.userService.updateStatusUserService({ id: rest.id, actor });
   }
 
   @MessagePattern('user.deleteUserByAdmin')
-  deleteUserByAdmin(@Payload() { id }: { id: string }) {
-    return this.userService.deleteUserByAdminService({ id });
+  deleteUserByAdmin(@Payload() payload: { id: string; expectedRole?: string } & RpcActorPayload) {
+    const { actor, rest } = splitActor(payload);
+    return this.userService.deleteUserByAdminService({
+      id: rest.id,
+      actor,
+      expectedRole: rest.expectedRole,
+    });
   }
 
   @MessagePattern('user.changePassword')

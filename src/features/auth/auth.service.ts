@@ -18,6 +18,7 @@ import type {
 import {
   compareData,
   hashData,
+  loginSessionRedisKey,
   signAccessToken,
   signRefreshToken,
   type JwtRefreshPayload,
@@ -33,7 +34,6 @@ import { RmqProducer } from '../rabbitmq/rmq.producer';
 /** How long a forgot-password reset token stays valid — matches the copy in the reset email. */
 const RESET_PASSWORD_TOKEN_TTL_SECONDS = 300;
 const resetPasswordRedisKey = (jti: string) => `reset-password:${jti}`;
-const loginSessionRedisKey = (userId: string) => `session:${userId}`;
 
 function parseRefreshTokenPayload(value: unknown): JwtRefreshPayload {
   if (typeof value !== 'object' || value === null) {
@@ -112,7 +112,11 @@ export class AuthService {
     };
   }
 
-  /** Finds the user by email or auto-registers them as STUDENT (Google/Facebook sign-in). */
+  /**
+   * Finds the user by email or auto-registers them as STUDENT (Google/Facebook sign-in). An
+   * existing account is only reused when it is a STUDENT: social sign-in must never hand over an
+   * ADMIN/TUTOR/PARENT account that happens to share the provider's email.
+   */
   private async findOrCreateOAuthUser(profile: {
     email: string;
     firstName: string;
@@ -122,7 +126,12 @@ export class AuthService {
       field: 'email',
       value: profile.email,
     });
-    if (existing) return existing;
+    if (existing) {
+      if (existing.role !== 'STUDENT') {
+        throw new UnauthorizedException(ERROR_MESSAGES.OAUTH_ACCOUNT_NOT_LINKABLE);
+      }
+      return existing;
+    }
 
     await this.userService.createUserService({
       email: profile.email,
@@ -139,7 +148,7 @@ export class AuthService {
     return created;
   }
 
-  // TODO: register tutor ...
+  /** Public registration always creates a STUDENT. TUTOR/ADMIN accounts are created by an admin. */
   async registerService(registerDto: RegisterDto): Promise<RegisterResponseDto> {
     const { email, username, password, firstName, lastName } = registerDto;
 
@@ -167,7 +176,7 @@ export class AuthService {
       password,
       firstName,
       lastName,
-      role: 'TUTOR',
+      role: 'STUDENT',
     });
 
     const createdRows = await this.userService.getUserByField({ field: 'email', value: email });

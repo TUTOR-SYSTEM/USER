@@ -219,6 +219,7 @@ export class AuthController {
     return this.authService.forgotPasswordService(forgotPasswordDto);
   }
 
+  @Public()
   @ApiBearerAuth('access-token')
   @Post('/reset-password')
   @HttpCode(StatusCodes.OK)
@@ -254,7 +255,6 @@ export class AuthController {
     @Body(new ZodValidationPipe<ResetPasswordDto>(resetPasswordSchema))
     resetPasswordDto: ResetPasswordDto,
   ): Promise<ResetPasswordResponseDto> {
-    console.log(resetPasswordDto);
     return this.authService.resetPasswordService(resetPasswordDto);
   }
 

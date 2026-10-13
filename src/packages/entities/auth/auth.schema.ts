@@ -5,6 +5,7 @@ export const AUTH_MESSAGES = {
   EMAIL_REQUIRED: ERROR_MESSAGES.AUTH_EMAIL_REQUIRED,
   EMAIL_INVALID: ERROR_MESSAGES.AUTH_EMAIL_INVALID,
   USERNAME_REQUIRED: ERROR_MESSAGES.AUTH_USERNAME_REQUIRED,
+  USERNAME_MAX: ERROR_MESSAGES.AUTH_USERNAME_MAX,
   PASSWORD_REQUIRED: ERROR_MESSAGES.AUTH_PASSWORD_REQUIRED,
   PASSWORD_MIN: ERROR_MESSAGES.AUTH_PASSWORD_MIN,
   PASSWORD_MAX: ERROR_MESSAGES.AUTH_PASSWORD_MAX,
@@ -51,7 +52,10 @@ export const passwordFieldSchema = z
 
 export const registerSchema = z.object({
   email: emailFieldSchema,
-  username: z.string({ message: AUTH_MESSAGES.USERNAME_REQUIRED }).optional(),
+  username: z
+    .string({ message: AUTH_MESSAGES.USERNAME_REQUIRED })
+    .max(50, { message: AUTH_MESSAGES.USERNAME_MAX })
+    .optional(),
   password: passwordFieldSchema,
   firstName: z
     .string({ message: AUTH_MESSAGES.FIRST_NAME_REQUIRED })

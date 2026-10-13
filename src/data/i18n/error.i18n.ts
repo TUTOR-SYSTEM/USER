@@ -9,6 +9,30 @@ export const ERROR_TRANSLATIONS = {
   EMAIL_EXISTS: { vi: 'Email đã tồn tại', en: 'Email already exists' },
   USERNAME_EXISTS: { vi: 'Tên đăng nhập đã tồn tại', en: 'Username already exists' },
   USER_NOT_FOUND: { vi: 'Không tìm thấy người dùng', en: 'User not found' },
+  FORBIDDEN_USER_ACTION: {
+    vi: 'Bạn không có quyền thực hiện thao tác này trên người dùng này',
+    en: 'You are not allowed to perform this action on this user',
+  },
+  CANNOT_MODIFY_OWN_STATUS: {
+    vi: 'Không thể khoá hoặc xoá chính tài khoản của bạn',
+    en: 'You cannot deactivate or delete your own account',
+  },
+  LAST_ADMIN_CANNOT_BE_REMOVED: {
+    vi: 'Không thể khoá hoặc xoá quản trị viên hoạt động cuối cùng',
+    en: 'Cannot deactivate or delete the last active admin',
+  },
+  USER_HAS_LINKED_ACCOUNTS: {
+    vi: 'Không thể xoá: tài khoản đang được liên kết với học sinh hoặc phụ huynh khác',
+    en: 'Cannot delete: the account is still linked to other students or parents',
+  },
+  INVALID_LINK_TARGET: {
+    vi: 'Tài khoản liên kết không hợp lệ (sai vai trò hoặc không tồn tại)',
+    en: 'Invalid linked account (wrong role or not found)',
+  },
+  OAUTH_ACCOUNT_NOT_LINKABLE: {
+    vi: 'Email này đã thuộc một tài khoản không thể đăng nhập bằng mạng xã hội',
+    en: 'This email belongs to an account that cannot sign in with a social provider',
+  },
   INVALID_CREDENTIALS: {
     vi: 'Thông tin đăng nhập không đúng',
     en: 'Invalid credentials',
@@ -40,6 +64,10 @@ export const ERROR_TRANSLATIONS = {
   AUTH_EMAIL_REQUIRED: { vi: 'Vui lòng nhập email', en: 'Email is required' },
   AUTH_EMAIL_INVALID: { vi: 'Email không hợp lệ', en: 'Invalid email address' },
   AUTH_USERNAME_REQUIRED: { vi: 'Vui lòng nhập tên đăng nhập', en: 'Username is required' },
+  AUTH_USERNAME_MAX: {
+    vi: 'Tên đăng nhập tối đa 50 ký tự',
+    en: 'Username must be at most 50 characters',
+  },
   AUTH_PASSWORD_REQUIRED: { vi: 'Vui lòng nhập mật khẩu', en: 'Password is required' },
   AUTH_PASSWORD_MIN: {
     vi: 'Mật khẩu phải có ít nhất 6 ký tự',
