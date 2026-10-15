@@ -160,6 +160,22 @@ describe('StudentRepository', () => {
       await expect(repo.updateParent({ id: PARENT_ID, data: { phone: '2' } })).resolves.toBeNull();
     });
 
+    it('update and updateParent refresh updatedAt alongside the given fields', async () => {
+      const { repo, calls } = await build([[{ id: STUDENT_ID }], [{ id: PARENT_ID }]]);
+      await repo.update({ id: STUDENT_ID, data: { school: 'X' } });
+      await repo.updateParent({ id: PARENT_ID, data: { phone: '1' } });
+
+      const setOf = (i: number) =>
+        (calls.update.mock.results[i].value as { set: jest.Mock }).set.mock.calls[0][0] as Record<
+          string,
+          unknown
+        >;
+      expect(setOf(0)).toMatchObject({ school: 'X' });
+      expect(setOf(0).updatedAt).toBeInstanceOf(Date);
+      expect(setOf(1)).toMatchObject({ phone: '1' });
+      expect(setOf(1).updatedAt).toBeInstanceOf(Date);
+    });
+
     it('delete returns true only when a STUDENT row was removed', async () => {
       const { repo } = await build([[{ id: STUDENT_ID }], []]);
       await expect(repo.delete({ id: STUDENT_ID })).resolves.toBe(true);

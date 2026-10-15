@@ -72,7 +72,7 @@ export class StudentRepository {
   async update({ id, data }: { id: string; data: Partial<typeof users.$inferInsert> }) {
     const [student] = await this.db
       .update(users)
-      .set(data)
+      .set({ ...data, updatedAt: new Date() })
       .where(and(eq(users.id, id), eq(users.role, 'STUDENT')))
       .returning();
     return student ?? null;
@@ -81,7 +81,7 @@ export class StudentRepository {
   async updateParent({ id, data }: { id: string; data: Partial<typeof users.$inferInsert> }) {
     const [parent] = await this.db
       .update(users)
-      .set(data)
+      .set({ ...data, updatedAt: new Date() })
       .where(and(eq(users.id, id), eq(users.role, 'PARENT')))
       .returning();
     return parent ?? null;
