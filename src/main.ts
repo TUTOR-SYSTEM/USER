@@ -58,14 +58,20 @@ async function bootstrap() {
     'Bootstrap',
   );
 
-  app.enableCors({ origin: true, credentials: true });
+  // Only the configured browser origins may call this service cross-origin. No wildcard: with
+  // credentials enabled, reflecting every origin would let any site read authenticated responses.
+  const corsOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  app.enableCors({ origin: corsOrigins.length > 0 ? corsOrigins : false, credentials: true });
   app.useGlobalInterceptors(new ResponseInterceptor(app.get(Reflector)));
   app.useGlobalInterceptors(new ErrorInterceptor(), new LoggerInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
 
   const config = new DocumentBuilder()
     .setTitle('User Service API')
-    .setDescription('API documentation for the tutoring platform user/identity service')
+    .setDescription('API documentation for the tutoring platform identity/user service')
     .setVersion('1.0')
     .addBearerAuth(
       {

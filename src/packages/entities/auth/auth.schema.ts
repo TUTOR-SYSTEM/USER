@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { ERROR_MESSAGES } from 'src/data/constants';
+import {
+  loginPasswordSchema,
+  newPasswordSchema,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from './password.schema';
 
 export const AUTH_MESSAGES = {
   EMAIL_REQUIRED: ERROR_MESSAGES.AUTH_EMAIL_REQUIRED,
@@ -20,6 +26,8 @@ export const AUTH_MESSAGES = {
   REFRESH_TOKEN_REQUIRED: ERROR_MESSAGES.AUTH_REFRESH_TOKEN_REQUIRED,
   RESET_TOKEN_REQUIRED: ERROR_MESSAGES.AUTH_RESET_TOKEN_REQUIRED,
   RESET_TOKEN_INVALID: ERROR_MESSAGES.AUTH_RESET_TOKEN_INVALID,
+  VERIFY_EMAIL_TOKEN_REQUIRED: ERROR_MESSAGES.AUTH_VERIFY_EMAIL_TOKEN_REQUIRED,
+  VERIFY_EMAIL_TOKEN_INVALID: ERROR_MESSAGES.AUTH_VERIFY_EMAIL_TOKEN_INVALID,
   CONFIRM_PASSWORD_REQUIRED: ERROR_MESSAGES.AUTH_CONFIRM_PASSWORD_REQUIRED,
   CONFIRM_PASSWORD_MIN: ERROR_MESSAGES.AUTH_CONFIRM_PASSWORD_MIN,
   CONFIRM_PASSWORD_MAX: ERROR_MESSAGES.AUTH_CONFIRM_PASSWORD_MAX,
@@ -31,32 +39,13 @@ export const emailFieldSchema = z
   .min(1, { message: AUTH_MESSAGES.EMAIL_REQUIRED })
   .email({ message: AUTH_MESSAGES.EMAIL_INVALID });
 
-export const passwordFieldSchema = z
-  .string({ message: AUTH_MESSAGES.PASSWORD_REQUIRED })
-  .min(6, { message: AUTH_MESSAGES.PASSWORD_MIN })
-  .max(25, { message: AUTH_MESSAGES.PASSWORD_MAX })
-  .superRefine((password, ctx) => {
-    if (!/[a-z]/.test(password)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: AUTH_MESSAGES.PASSWORD_LOWERCASE });
-    }
-    if (!/[A-Z]/.test(password)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: AUTH_MESSAGES.PASSWORD_UPPERCASE });
-    }
-    if (!/\d/.test(password)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: AUTH_MESSAGES.PASSWORD_DIGIT });
-    }
-    if (!/[^A-Za-z0-9]/.test(password)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: AUTH_MESSAGES.PASSWORD_SPECIAL });
-    }
-  });
-
 export const registerSchema = z.object({
   email: emailFieldSchema,
   username: z
     .string({ message: AUTH_MESSAGES.USERNAME_REQUIRED })
     .max(50, { message: AUTH_MESSAGES.USERNAME_MAX })
     .optional(),
-  password: passwordFieldSchema,
+  password: newPasswordSchema,
   firstName: z
     .string({ message: AUTH_MESSAGES.FIRST_NAME_REQUIRED })
     .min(1, { message: AUTH_MESSAGES.FIRST_NAME_REQUIRED })
@@ -69,7 +58,7 @@ export const registerSchema = z.object({
 
 export const loginSchema = z.object({
   email: emailFieldSchema,
-  password: passwordFieldSchema,
+  password: loginPasswordSchema,
 });
 
 export const loginByUserCodeSchema = z.object({
@@ -77,7 +66,7 @@ export const loginByUserCodeSchema = z.object({
     .string({ message: ERROR_MESSAGES.AUTH_USER_CODE_REQUIRED })
     .min(6, { message: ERROR_MESSAGES.AUTH_USER_CODE_LENGTH })
     .max(6, { message: ERROR_MESSAGES.AUTH_USER_CODE_LENGTH }),
-  password: passwordFieldSchema,
+  password: loginPasswordSchema,
   role: z.enum(['PARENT', 'STUDENT']),
 });
 
@@ -96,11 +85,11 @@ const resetPasswordBodySchema = z
     jti: z
       .string({ message: AUTH_MESSAGES.RESET_TOKEN_REQUIRED })
       .uuid({ message: AUTH_MESSAGES.RESET_TOKEN_INVALID }),
-    password: passwordFieldSchema,
+    password: newPasswordSchema,
     confirmPassword: z
       .string({ message: AUTH_MESSAGES.CONFIRM_PASSWORD_REQUIRED })
-      .min(6, { message: AUTH_MESSAGES.CONFIRM_PASSWORD_MIN })
-      .max(25, { message: AUTH_MESSAGES.CONFIRM_PASSWORD_MAX }),
+      .min(PASSWORD_MIN_LENGTH, { message: AUTH_MESSAGES.CONFIRM_PASSWORD_MIN })
+      .max(PASSWORD_MAX_LENGTH, { message: AUTH_MESSAGES.CONFIRM_PASSWORD_MAX }),
   })
   .superRefine((data, ctx) => {
     if (data.password !== data.confirmPassword) {
@@ -122,3 +111,9 @@ export const resetPasswordSchema = z.preprocess((val) => {
   }
   return val;
 }, resetPasswordBodySchema);
+
+export const verifyEmailSchema = z.object({
+  jti: z
+    .string({ message: AUTH_MESSAGES.VERIFY_EMAIL_TOKEN_REQUIRED })
+    .uuid({ message: AUTH_MESSAGES.VERIFY_EMAIL_TOKEN_INVALID }),
+});

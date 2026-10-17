@@ -4,6 +4,8 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { IS_PUBLIC_KEY } from '@packages/decorators';
 import { JwtAuthGuard } from 'src/packages/guards/jwt-auth.guard';
+import { clearSessionCache } from 'src/packages/helpers/session-check.helper';
+import { ServiceUnavailableException } from '@nestjs/common';
 
 type Row = { id: string; isActive: boolean }[];
 
@@ -34,6 +36,9 @@ function makeContext(headers: Record<string, string | undefined>, isPublic = fal
 describe('JwtAuthGuard', () => {
   const SECRET = 'test-access-secret';
   const USER_ID = '11111111-1111-4111-8111-111111111111';
+  const SID = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(() => clearSessionCache());
 
   const jwt = new JwtService({});
   const signToken = (payload: Record<string, unknown>, secret = SECRET) =>
@@ -44,12 +49,14 @@ describe('JwtAuthGuard', () => {
     email: 'student@example.com',
     typ: 'access',
     role: 'STUDENT',
+    sid: SID,
   };
 
   function build(opts: {
     env?: Record<string, string | undefined>;
     isPublic?: boolean;
     db?: Row | Error;
+    session?: boolean | Error;
   }) {
     const env = opts.env ?? { JWT_ACCESS_SECRET: SECRET };
     const config = {
@@ -61,8 +68,14 @@ describe('JwtAuthGuard', () => {
       ),
     } as unknown as Reflector;
     const database = makeDb(opts.db ?? [{ id: USER_ID, isActive: true }]);
-    const guard = new JwtAuthGuard(jwt, config, reflector, database.db as never);
-    return { guard, reflector, database, config };
+    const session = opts.session ?? true;
+    const rmq = {
+      send: jest.fn(() =>
+        session instanceof Error ? Promise.reject(session) : Promise.resolve(session),
+      ),
+    };
+    const guard = new JwtAuthGuard(jwt, config, reflector, database.db as never, rmq as never);
+    return { guard, reflector, database, config, rmq };
   }
 
   const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -117,6 +130,7 @@ describe('JwtAuthGuard', () => {
         email: 'student@example.com',
         typ: 'access',
         role: 'STUDENT',
+        sid: SID,
       });
     });
 
@@ -224,6 +238,7 @@ describe('JwtAuthGuard', () => {
         email: 'student@example.com',
         typ: 'access',
         role: 'STUDENT',
+        sid: SID,
       });
       expect(database.select).toHaveBeenCalledTimes(1);
       expect(database.limit).toHaveBeenCalledWith(1);
@@ -259,5 +274,50 @@ describe('JwtAuthGuard', () => {
       bearer(jwt.sign('bare-string-payload' as never, { secret: SECRET })),
     );
     await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+  describe('session check (per-device logout)', () => {
+    it('rejects a token whose session no longer exists in Redis', async () => {
+      const { guard, database, rmq } = build({ session: false });
+      const { ctx } = makeContext(bearer(signToken(validPayload)));
+      await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
+      expect(rmq.send).toHaveBeenCalledWith(
+        'redis.exists',
+        { key: `session:${USER_ID}:${SID}` },
+        expect.any(Number),
+        expect.any(Number),
+      );
+      expect(database.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects a legacy token that carries no sid', async () => {
+      const { guard, rmq } = build({});
+      const { sid: _unused, ...legacy } = validPayload;
+      void _unused;
+      const { ctx } = makeContext(bearer(signToken(legacy)));
+      await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
+      expect(rmq.send).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with 503 when the session store is unreachable', async () => {
+      const { guard } = build({ session: new Error('redis timeout') });
+      const { ctx } = makeContext(bearer(signToken(validPayload)));
+      await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('fails open only when SESSION_CHECK_FAIL_OPEN=true is set', async () => {
+      const { guard } = build({
+        env: { JWT_ACCESS_SECRET: SECRET, SESSION_CHECK_FAIL_OPEN: 'true' },
+        session: new Error('redis timeout'),
+      });
+      const { ctx } = makeContext(bearer(signToken(validPayload)));
+      await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    });
+
+    it('exposes the sid on request.user', async () => {
+      const { guard } = build({});
+      const { ctx, request } = makeContext(bearer(signToken(validPayload)));
+      await guard.canActivate(ctx);
+      expect(request.user).toMatchObject({ id: USER_ID, sid: SID });
+    });
   });
 });

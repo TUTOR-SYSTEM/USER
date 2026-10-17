@@ -10,6 +10,10 @@ const SENSITIVE_KEYS = [
   'token',
   'accessToken',
   'refreshToken',
+  // One-time credentials carried in reset/verify links and in the RPC bodies that handle them.
+  'jti',
+  'resetToken',
+  'verifyToken',
 ];
 const MAX_LOG_LENGTH = 1000;
 

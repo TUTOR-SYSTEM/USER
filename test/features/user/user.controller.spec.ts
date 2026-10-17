@@ -12,6 +12,8 @@ import { UserController } from 'src/features/user/user.controller';
 import { UserService } from 'src/features/user/user.service';
 
 const ACTOR = { id: '22222222-2222-4222-8222-222222222222', role: 'STUDENT' };
+const ADMIN = { id: '44444444-4444-4444-8444-444444444444', role: 'ADMIN' };
+const ADMIN_ACTOR = ADMIN;
 const TARGET_ID = '33333333-3333-4333-8333-333333333333';
 
 describe('UserController', () => {
@@ -89,10 +91,9 @@ describe('UserController', () => {
       expect(handlerMeta(name).roles).toBeUndefined();
     });
 
-    it('KNOWN ISSUE: getUsers (GET /users) has no role gate, so any signed-in role can list all users', () => {
-      // Pinned to current behaviour so a fix shows up as a deliberate test change.
-      expect(handlerMeta('getUsers').roles).toBeUndefined();
-      expect(handlerMeta('getUsers').guards).not.toContain(RolesGuard);
+    it('getUsers (GET /users) is admin-only: @Roles(ADMIN) with RolesGuard', () => {
+      expect(handlerMeta('getUsers').roles).toEqual(['ADMIN']);
+      expect(handlerMeta('getUsers').guards).toContain(RolesGuard);
     });
 
     it('validates list query, create body, and update bodies with their own schemas', () => {
@@ -112,21 +113,21 @@ describe('UserController', () => {
   });
 
   describe('delegation', () => {
-    it('getUsers forwards the validated query', async () => {
+    it('getUsers forwards the validated query and the caller', async () => {
       const query = { page: 1, limit: 5 } as never;
-      await controller.getUsers(query);
-      expect(service.getUsersService).toHaveBeenCalledWith(query);
+      await controller.getUsers(ADMIN, query);
+      expect(service.getUsersService).toHaveBeenCalledWith(query, ADMIN_ACTOR);
     });
 
     it('getDetailUserController returns the caller profile by the JWT subject', async () => {
       await controller.getDetailUserController(ACTOR as never);
-      expect(service.getDetailUserService).toHaveBeenCalledWith({ id: ACTOR.id });
+      expect(service.getDetailUserService).toHaveBeenCalledWith({ id: ACTOR.id, actor: ACTOR });
     });
 
     it('getUserByField forwards the field filter', async () => {
       const dto = { field: 'email', value: 'a@b.c' } as never;
-      await controller.getUserByField(dto);
-      expect(service.findUsersByFieldPublic).toHaveBeenCalledWith(dto);
+      await controller.getUserByField(ADMIN, dto);
+      expect(service.findUsersByFieldPublic).toHaveBeenCalledWith(dto, ADMIN_ACTOR);
     });
 
     it('createUser forwards the DTO', async () => {
@@ -140,25 +141,36 @@ describe('UserController', () => {
       await controller.updateUserController(ACTOR as never, data);
       expect(service.updateOwnProfileService).toHaveBeenCalledWith({
         id: ACTOR.id,
-        role: ACTOR.role,
+        actor: ACTOR,
         data,
       });
     });
 
     it('updateUserByAdminController uses the :id param, not the caller', async () => {
       const data = { isActive: false } as never;
-      await controller.updateUserByAdminController(TARGET_ID, data);
-      expect(service.updateUserService).toHaveBeenCalledWith({ id: TARGET_ID, data });
+      await controller.updateUserByAdminController(ADMIN, TARGET_ID, data);
+      expect(service.updateUserService).toHaveBeenCalledWith({
+        id: TARGET_ID,
+        data,
+        actor: ADMIN_ACTOR,
+      });
     });
 
-    it('updateStatusUserController forwards only the id', async () => {
-      await controller.updateStatusUserController(TARGET_ID);
-      expect(service.updateStatusUserService).toHaveBeenCalledWith({ id: TARGET_ID });
+    it('updateStatusUserController forwards the id, the requested isActive and the caller', async () => {
+      await controller.updateStatusUserController(ADMIN, TARGET_ID, { isActive: false } as never);
+      expect(service.updateStatusUserService).toHaveBeenCalledWith({
+        id: TARGET_ID,
+        isActive: false,
+        actor: ADMIN_ACTOR,
+      });
     });
 
-    it('deleteUserByAdminController forwards only the id', async () => {
-      await controller.deleteUserByAdminController(TARGET_ID);
-      expect(service.deleteUserByAdminService).toHaveBeenCalledWith({ id: TARGET_ID });
+    it('deleteUserByAdminController forwards the id and the caller', async () => {
+      await controller.deleteUserByAdminController(ADMIN, TARGET_ID);
+      expect(service.deleteUserByAdminService).toHaveBeenCalledWith({
+        id: TARGET_ID,
+        actor: ADMIN_ACTOR,
+      });
     });
 
     it('changePasswordController uses the caller id, never a body id', async () => {
@@ -169,7 +181,9 @@ describe('UserController', () => {
 
     it('propagates service errors unchanged', async () => {
       service.deleteUserByAdminService.mockRejectedValueOnce(new Error('nope'));
-      await expect(controller.deleteUserByAdminController(TARGET_ID)).rejects.toThrow('nope');
+      await expect(controller.deleteUserByAdminController(ADMIN, TARGET_ID)).rejects.toThrow(
+        'nope',
+      );
     });
   });
 });

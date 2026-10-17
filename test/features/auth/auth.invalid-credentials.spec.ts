@@ -73,8 +73,8 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
     jest.restoreAllMocks();
   });
 
-  // AC1: unknown email -> 401 with the generic message
-  it('AC1: unknown email rejects with UnauthorizedException (401) and INVALID_CREDENTIALS', async () => {
+  // AC1: unknown email -> 401 with its own message
+  it('AC1: unknown email rejects with UnauthorizedException (401) and EMAIL_NOT_FOUND', async () => {
     userService.getUserByField.mockResolvedValue([]);
 
     const error = await captureError(
@@ -83,12 +83,12 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
-    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.EMAIL_NOT_FOUND);
     expect(rmq.send).not.toHaveBeenCalled();
   });
 
-  // AC2: wrong password -> same 401 + message, so existence of the account is not revealed
-  it('AC2: wrong password rejects with UnauthorizedException (401) and the same INVALID_CREDENTIALS message', async () => {
+  // AC2: wrong password -> 401 with its own message (distinct from an unknown email)
+  it('AC2: wrong password rejects with UnauthorizedException (401) and INVALID_PASSWORD', async () => {
     userService.getUserByField.mockResolvedValue([buildUser({ password: correctPasswordHash })]);
 
     const error = await captureError(
@@ -97,7 +97,7 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
-    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_PASSWORD);
     expect(rmq.send).not.toHaveBeenCalled();
   });
 

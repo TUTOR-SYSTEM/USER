@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -14,26 +20,58 @@ import type {
   RegisterResponseDto,
   ResetPasswordDto,
   ResetPasswordResponseDto,
+  VerifyEmailDto,
+  VerifyEmailResponseDto,
 } from '@packages/entities/auth';
 import {
   compareData,
   hashData,
-  loginSessionRedisKey,
+  hashRefreshToken,
+  refreshHashRedisKey,
+  safeEqualHex,
+  sessionRedisKey,
   signAccessToken,
   signRefreshToken,
   type JwtRefreshPayload,
   type JwtTokensConfig,
+  type JwtUserRole,
 } from '@packages/helpers';
 import { UserService } from '../user/user.service';
 import { getJwtTokensConfig } from '@packages/configs/jwt-sign.config';
 import { randomUUID } from 'node:crypto';
-import { checkUuidValid, type JwtUserRole } from '@packages/helpers';
+import { checkUuidValid } from '@packages/helpers';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
 
 /** How long a forgot-password reset token stays valid — matches the copy in the reset email. */
 const RESET_PASSWORD_TOKEN_TTL_SECONDS = 300;
 const resetPasswordRedisKey = (jti: string) => `reset-password:${jti}`;
+
+/** How long an email-verification link stays valid. */
+const VERIFY_EMAIL_TOKEN_TTL_SECONDS = 86400;
+const verifyEmailRedisKey = (jti: string) => `verify-email:${jti}`;
+
+/** Redis round-trip budget for session/token reads: one short retry, then fail. */
+const REDIS_READ_TIMEOUT_MS = 2_000;
+const REDIS_READ_RETRIES = 1;
+
+const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
+/** Payload stored behind a verify-email token: the email is bound so a later change invalidates it. */
+type VerifyEmailToken = { userId: string; email: string };
+
+function parseVerifyEmailToken(raw: string | null): VerifyEmailToken | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<VerifyEmailToken>;
+    if (typeof value.userId === 'string' && typeof value.email === 'string') {
+      return { userId: value.userId, email: value.email };
+    }
+  } catch {
+    // Not in the current format (or corrupted): treated as invalid below.
+  }
+  return null;
+}
 
 function parseRefreshTokenPayload(value: unknown): JwtRefreshPayload {
   if (typeof value !== 'object' || value === null) {
@@ -46,7 +84,17 @@ function parseRefreshTokenPayload(value: unknown): JwtRefreshPayload {
   if (typeof record.sub !== 'string' || typeof record.email !== 'string') {
     throw new UnauthorizedException(ERROR_MESSAGES.INVALID_TOKEN_PAYLOAD);
   }
-  return { sub: record.sub, email: record.email, typ: 'refresh' };
+  // Tokens minted before sessions existed carry no `sid`: they cannot be revoked, so they are refused.
+  if (typeof record.sid !== 'string' || !checkUuidValid({ data: record.sid })) {
+    throw new UnauthorizedException(ERROR_MESSAGES.INVALID_SESSION);
+  }
+  return {
+    sub: record.sub,
+    email: record.email,
+    typ: 'refresh',
+    sid: record.sid,
+    jti: typeof record.jti === 'string' ? record.jti : '',
+  };
 }
 
 @Injectable()
@@ -58,52 +106,62 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
     private readonly rmqProducer: RmqProducer,
-    configService: ConfigService,
+    private readonly configService: ConfigService,
   ) {
     this.jwtTokensConfig = getJwtTokensConfig(configService);
-  }
-
-  /**
-   * Fire-and-forget: persists the login session in third-service's Redis via the existing
-   * generic `redis.set` topic — key is `session:{userId}`, value is the raw refreshToken.
-   * TTL matches the refresh token's own lifetime. Not awaited by callers — a RabbitMQ/Redis hiccup
-   * here must never fail the login response itself.
-   */
-  private emitLoginSessionCreated(userId: string, refreshToken: string): void {
-    this.rmqProducer
-      .send('redis.set', {
-        key: loginSessionRedisKey(userId),
-        value: refreshToken,
-        ttlSeconds: this.jwtTokensConfig.refreshExpiresIn,
-      })
-      .catch((error: unknown) =>
-        this.logger.warn(`Failed to create login session for user ${userId}`, error),
-      );
   }
 
   /**
    * Single generic error for unknown user and wrong password (no account enumeration). A dummy
    * bcrypt compare runs for unknown users so response time doesn't leak existence either.
    */
-  private async verifyCredentials(user: User | undefined, password: string): Promise<User> {
-    const hash = user?.password ?? (await (this.dummyHash ??= hashData('dummy-password')));
-    const ok = await compareData(password, hash);
-    if (!user || !ok) throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
+  /**
+   * Each failure has its own code so the client can tell the user what to fix. An unknown
+   * account still runs a bcrypt compare against a dummy hash, so the response time does not
+   * reveal whether the account exists.
+   */
+  private async verifyCredentials(
+    user: User | undefined,
+    password: string,
+    notFoundCode: string = ERROR_MESSAGES.EMAIL_NOT_FOUND,
+  ): Promise<User> {
+    if (!user) {
+      await compareData(password, await (this.dummyHash ??= hashData('dummy-password')));
+      throw new UnauthorizedException(notFoundCode);
+    }
+    if (!user.password) throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_NO_PASSWORD);
+    if (!(await compareData(password, user.password))) {
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_PASSWORD);
+    }
     return user;
   }
 
-  /** Signs the access/refresh pair, records the session and builds the login response. */
-  private async issueLoginResponse(user: User): Promise<LoginResponseDto> {
-    if (user.isActive === false) {
-      throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
-    }
+  /**
+   * Signs an access/refresh pair bound to `sid` and stores the session in Redis. Both keys are
+   * awaited: a token must never be handed out for a session that did not get recorded.
+   */
+  private async issueTokens(user: User, sid: string): Promise<LoginResponseDto> {
     const payload = { sub: user.id, email: user.email, role: user.role as JwtUserRole };
     const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken(this.jwtService, payload, this.jwtTokensConfig),
-      signRefreshToken(this.jwtService, { sub: user.id, email: user.email }, this.jwtTokensConfig),
+      signAccessToken(this.jwtService, { ...payload, sid }, this.jwtTokensConfig),
+      signRefreshToken(
+        this.jwtService,
+        { sub: user.id, email: user.email, sid },
+        this.jwtTokensConfig,
+      ),
     ]);
 
-    this.emitLoginSessionCreated(user.id, refreshToken);
+    const ttlSeconds = this.jwtTokensConfig.refreshExpiresIn;
+    await this.rmqProducer.send('redis.set', {
+      key: sessionRedisKey(user.id, sid),
+      value: '1',
+      ttlSeconds,
+    });
+    await this.rmqProducer.send('redis.set', {
+      key: refreshHashRedisKey(user.id, sid),
+      value: hashRefreshToken(refreshToken),
+      ttlSeconds,
+    });
 
     return {
       accessToken,
@@ -112,52 +170,105 @@ export class AuthService {
     };
   }
 
+  /** A fresh login always opens a new session; other devices stay signed in. */
+  private async issueLoginResponse(user: User): Promise<LoginResponseDto> {
+    if (user.isActive === false) {
+      throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
+    }
+    return this.issueTokens(user, randomUUID());
+  }
+
+  /** Deletes one session (both keys). Awaited: a logout must not be reported before it lands. */
+  private async revokeSession(userId: string, sid: string): Promise<void> {
+    await this.rmqProducer.emit('redis.del', {
+      keys: [sessionRedisKey(userId, sid), refreshHashRedisKey(userId, sid)],
+    });
+  }
+
+  /**
+   * Sends the sign-up verification mail. Best-effort: the account is already created, so a
+   * Redis/RabbitMQ/mail failure is only logged and never fails registration.
+   */
+  private async sendVerifyEmail(user: {
+    id: string;
+    email: string;
+    firstName: string;
+  }): Promise<void> {
+    try {
+      const jti = randomUUID();
+      await this.rmqProducer.send('redis.set', {
+        key: verifyEmailRedisKey(jti),
+        value: JSON.stringify({ userId: user.id, email: user.email } satisfies VerifyEmailToken),
+        ttlSeconds: VERIFY_EMAIL_TOKEN_TTL_SECONDS,
+      });
+      await this.rmqProducer.send('email.sendVerifyEmail', {
+        to: user.email,
+        verifyToken: jti,
+        displayName: user.firstName,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to send verification email to user ${user.id}`, error);
+    }
+  }
+
   /**
    * Finds the user by email or auto-registers them as STUDENT (Google/Facebook sign-in). An
    * existing account is only reused when it is a STUDENT: social sign-in must never hand over an
-   * ADMIN/TUTOR/PARENT account that happens to share the provider's email.
+   * ADMIN/TUTOR/PARENT account that happens to share the provider's email. The refusal uses the
+   * generic credentials error so it does not reveal that the account exists or its role.
+   *
+   * Pre-hijack guard: an existing STUDENT whose email was never verified may have been registered
+   * by someone else with that email. The provider has now proven ownership of the email, so the
+   * stored password is replaced with a random one (the squatter's credentials stop working and
+   * their live sessions are revoked) before the account is handed over.
    */
   private async findOrCreateOAuthUser(profile: {
     email: string;
     firstName: string;
     lastName: string;
   }): Promise<User> {
-    const [existing] = await this.userService.getUserByField({
-      field: 'email',
-      value: profile.email,
-    });
+    const email = normalizeEmail(profile.email);
+    const [existing] = await this.userService.getUserByField({ field: 'email', value: email });
     if (existing) {
       if (existing.role !== 'STUDENT') {
-        throw new UnauthorizedException(ERROR_MESSAGES.OAUTH_ACCOUNT_NOT_LINKABLE);
+        throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
       }
-      return existing;
+      if (existing.emailVerified) return existing;
+
+      await this.userService.updateUserPasswordService({
+        id: existing.id,
+        password: randomUUID(),
+      });
+      await this.userService.setEmailVerifiedService({ id: existing.id, emailVerified: true });
+      return { ...existing, emailVerified: true };
     }
 
-    await this.userService.createUserService({
-      email: profile.email,
-      password: randomUUID(),
-      firstName: profile.firstName,
-      lastName: profile.lastName,
-      role: 'STUDENT',
-    });
-    const [created] = await this.userService.getUserByField({
-      field: 'email',
-      value: profile.email,
-    });
+    await this.userService.createUserService(
+      {
+        email,
+        password: randomUUID(),
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        role: 'STUDENT',
+      },
+      { emailVerified: true },
+    );
+    const [created] = await this.userService.getUserByField({ field: 'email', value: email });
     if (!created) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
     return created;
   }
 
   /** Public registration always creates a STUDENT. TUTOR/ADMIN accounts are created by an admin. */
   async registerService(registerDto: RegisterDto): Promise<RegisterResponseDto> {
-    const { email, username, password, firstName, lastName } = registerDto;
+    const { username, password, firstName, lastName } = registerDto;
+    const email = normalizeEmail(registerDto.email);
 
     const checkUserWithEmail = await this.userService.getUserByField({
       field: 'email',
       value: email,
     });
     if (Array.isArray(checkUserWithEmail) && checkUserWithEmail.length > 0) {
-      throw new BadRequestException(ERROR_MESSAGES.EMAIL_EXISTS);
+      throw new BadRequestException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
     }
 
     const checkUserWithUsername =
@@ -167,7 +278,7 @@ export class AuthService {
         value: username?.trim(),
       }));
     if (Array.isArray(checkUserWithUsername) && checkUserWithUsername.length > 0) {
-      throw new BadRequestException(ERROR_MESSAGES.USERNAME_EXISTS);
+      throw new BadRequestException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
     }
 
     await this.userService.createUserService({
@@ -185,6 +296,8 @@ export class AuthService {
       throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
     }
 
+    await this.sendVerifyEmail(createdUser);
+
     return {
       user: {
         id: createdUser.id,
@@ -196,11 +309,10 @@ export class AuthService {
     };
   }
 
-  // TODO:  login by email + password ...
   async loginService(loginDto: LoginDto): Promise<LoginResponseDto> {
     const [found] = await this.userService.getUserByField({
       field: 'email',
-      value: loginDto.email,
+      value: normalizeEmail(loginDto.email),
     });
     const user = await this.verifyCredentials(found, loginDto.password);
 
@@ -215,7 +327,11 @@ export class AuthService {
     });
 
     const found = rows.find((u) => u.role === dto.role);
-    const user = await this.verifyCredentials(found, dto.password);
+    const user = await this.verifyCredentials(
+      found,
+      dto.password,
+      ERROR_MESSAGES.USER_CODE_NOT_FOUND,
+    );
 
     return this.issueLoginResponse(user);
   }
@@ -236,11 +352,20 @@ export class AuthService {
   ): Promise<ForgotPasswordResponseDto> {
     const [user] = await this.userService.getUserByField({
       field: 'email',
-      value: forgotPasswordDto.email,
+      value: normalizeEmail(forgotPasswordDto.email),
     });
-    // Same response whether or not the email exists — don't reveal registered emails.
-    if (!user) return { ok: true };
+    // Same response, same timing, whether or not the email exists: the mail is sent in the
+    // background so a registered address does not answer more slowly than an unknown one.
+    if (user) {
+      this.sendForgotPasswordMail(user).catch((error: unknown) =>
+        this.logger.warn(`Failed to send reset mail to user ${user.id}`, error),
+      );
+    }
 
+    return { ok: true };
+  }
+
+  private async sendForgotPasswordMail(user: { id: string; email: string; firstName: string }) {
     const jti = randomUUID();
     await this.rmqProducer.send('redis.set', {
       key: resetPasswordRedisKey(jti),
@@ -253,28 +378,50 @@ export class AuthService {
       resetToken: jti,
       displayName: user.firstName,
     });
-
-    return { ok: true };
   }
 
   async resetPasswordService(
     resetPasswordDto: ResetPasswordDto,
   ): Promise<ResetPasswordResponseDto> {
     const key = resetPasswordRedisKey(resetPasswordDto.jti);
-    const userId = await this.rmqProducer.send<string | null, { key: string }>('redis.get', {
-      key,
-    });
+    const userId = await this.redisGet(key);
     if (!userId) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_PASSWORD_TOKEN);
     }
 
     await this.updateUserPasswordService({ userId, password: resetPasswordDto.password });
+    // Replying to the reset mail proves the user controls the mailbox.
+    await this.userService.setEmailVerifiedService({ id: userId, emailVerified: true });
 
     // Best-effort cleanup: the password is already changed, so a delete failure here (token
     // stays until its TTL expires) must not fail the response.
     this.rmqProducer
       .emit('redis.del', { keys: [key] })
       .catch((error: unknown) => this.logger.warn(`Failed to delete reset token ${key}`, error));
+
+    return { ok: true };
+  }
+
+  async verifyEmailService(dto: VerifyEmailDto): Promise<VerifyEmailResponseDto> {
+    const key = verifyEmailRedisKey(dto.jti);
+    const token = parseVerifyEmailToken(await this.redisGet(key));
+    if (!token) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_VERIFY_EMAIL_TOKEN);
+    }
+
+    // The token is for the address it was issued to. If the account's email changed since, the
+    // link no longer proves anything about the current address.
+    const [user] = await this.userService.getUserByField({ field: 'id', value: token.userId });
+    if (!user || user.email !== token.email) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_VERIFY_EMAIL_TOKEN);
+    }
+
+    await this.userService.setEmailVerifiedService({ id: token.userId, emailVerified: true });
+
+    // Best-effort cleanup, same as reset-password: the email is already verified.
+    this.rmqProducer
+      .emit('redis.del', { keys: [key] })
+      .catch((error: unknown) => this.logger.warn(`Failed to delete verify token ${key}`, error));
 
     return { ok: true };
   }
@@ -300,25 +447,29 @@ export class AuthService {
   }
 
   /**
-   * The refresh token must equal the one stored at login (`session:{userId}`): logout deletes it
-   * and a newer login/refresh replaces it, so revoked or rotated tokens are rejected. A Redis/RMQ
-   * outage fails open (logged) so auth stays available.
+   * Reads a value the refresh/reset/verify flows depend on. Unlike the best-effort cleanups, a
+   * Redis/RMQ failure here is final: 503 instead of guessing.
    */
-  private async assertRefreshSessionActive(userId: string, refreshToken: string): Promise<void> {
-    let stored: string | null;
+  private async redisGet(key: string): Promise<string | null> {
     try {
-      stored = await this.rmqProducer.send<string | null, { key: string }>('redis.get', {
-        key: loginSessionRedisKey(userId),
-      });
+      return await this.rmqProducer.send<string | null, { key: string }>(
+        'redis.get',
+        { key },
+        REDIS_READ_TIMEOUT_MS,
+        REDIS_READ_RETRIES,
+      );
     } catch (error) {
-      this.logger.warn(`Could not verify login session for user ${userId}`, error);
-      return;
-    }
-    if (stored !== refreshToken) {
-      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+      this.logger.warn(`Redis read failed for ${key}`, error);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
     }
   }
 
+  /**
+   * Rotates the refresh token of an existing session. The presented token must hash to the value
+   * stored for `{userId, sid}`. A mismatch on an existing session means an old (already rotated)
+   * token was replayed: the session is revoked. Refresh always fails closed: without the stored
+   * hash there is nothing to verify the token against.
+   */
   async refreshTokens(dto: RefreshTokenBodyDto): Promise<LoginResponseDto> {
     let verified: unknown;
     try {
@@ -330,7 +481,15 @@ export class AuthService {
     }
 
     const payload = parseRefreshTokenPayload(verified);
-    await this.assertRefreshSessionActive(payload.sub, dto.refreshToken);
+    const storedHash = await this.redisGet(refreshHashRedisKey(payload.sub, payload.sid));
+    if (!storedHash) {
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+    }
+    if (!safeEqualHex(storedHash, hashRefreshToken(dto.refreshToken))) {
+      this.logger.warn(`Refresh token reuse for user ${payload.sub}, revoking session`);
+      await this.revokeSession(payload.sub, payload.sid);
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+    }
 
     const rows = await this.userService.getUserByField({
       field: 'id',
@@ -342,22 +501,19 @@ export class AuthService {
     }
 
     const user = rows[0];
-    return this.issueLoginResponse(user);
+    if (user.isActive === false) {
+      throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
+    }
+    // Same session id, new refresh token: the stored hash is replaced, so the old one is dead.
+    return this.issueTokens(user, payload.sid);
   }
 
-  // Logout: delete the session from Redis so the gateway rejects subsequent requests with 401
-  logoutService(user: Record<string, string>) {
-    if (!user.id || !checkUuidValid({ data: user.id })) {
-      throw new BadRequestException(ERROR_MESSAGES.INVALID_USER_ID);
+  /** `auth.logout`: ends one session (this device). Other devices keep their sessions. */
+  async logoutService({ userId, sid }: { userId: string; sid: string }) {
+    if (!checkUuidValid({ data: userId }) || !checkUuidValid({ data: sid })) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_SESSION);
     }
-
-    // Best-effort: if Redis delete fails, the session will expire via TTL anyway.
-    this.rmqProducer
-      .emit('redis.del', { keys: [loginSessionRedisKey(user.id)] })
-      .catch((error: unknown) =>
-        this.logger.warn(`Failed to delete session for user ${user.id}`, error),
-      );
-
-    return { ok: true };
+    await this.revokeSession(userId, sid);
+    return { message: 'Logged out' };
   }
 }

@@ -26,6 +26,7 @@ export const users = pgTable('users', {
   avatar: text('avatar'),
   phone: varchar('phone', { length: 20 }),
   isActive: boolean('is_active').default(true),
+  emailVerified: boolean('email_verified').notNull().default(false),
   role: userRoleEnum('role').default('STUDENT'),
   description: varchar('description', { length: 5000 }),
   userCode: varchar('userCode', { length: 6 }),

@@ -33,14 +33,49 @@ export const ERROR_TRANSLATIONS = {
     vi: 'Email này đã thuộc một tài khoản không thể đăng nhập bằng mạng xã hội',
     en: 'This email belongs to an account that cannot sign in with a social provider',
   },
+  EMAIL_NOT_FOUND: { vi: 'Email không tồn tại', en: 'Email does not exist' },
+  USER_CODE_NOT_FOUND: { vi: 'Mã người dùng không tồn tại', en: 'User code does not exist' },
+  ACCOUNT_NO_PASSWORD: {
+    vi: 'Tài khoản này đăng nhập bằng Google/Facebook, không có mật khẩu',
+    en: 'This account signs in with Google or Facebook and has no password',
+  },
   INVALID_CREDENTIALS: {
     vi: 'Thông tin đăng nhập không đúng',
     en: 'Invalid credentials',
   },
   INVALID_PASSWORD: { vi: 'Mật khẩu không đúng', en: 'Invalid password' },
+  // Generic duplicate answer for register/create: never says which field (or email) already exists.
+  ACCOUNT_ALREADY_EXISTS: {
+    vi: 'Không thể tạo tài khoản với thông tin này',
+    en: 'An account cannot be created with these details',
+  },
+  INVALID_SESSION: {
+    vi: 'Phiên đăng nhập không hợp lệ, vui lòng đăng nhập lại',
+    en: 'Session is no longer valid, please sign in again',
+  },
+  SESSION_CHECK_UNAVAILABLE: {
+    vi: 'Không thể xác minh phiên đăng nhập lúc này, vui lòng thử lại',
+    en: 'Could not verify the session right now, please try again',
+  },
+  NEW_PASSWORD_MUST_DIFFER: {
+    vi: 'Mật khẩu mới phải khác mật khẩu hiện tại',
+    en: 'New password must be different from the current password',
+  },
   INVALID_RESET_PASSWORD_TOKEN: {
     vi: 'Mã đặt lại mật khẩu không hợp lệ',
     en: 'Invalid reset password token',
+  },
+  INVALID_VERIFY_EMAIL_TOKEN: {
+    vi: 'Mã xác minh email không hợp lệ hoặc đã hết hạn',
+    en: 'Invalid or expired email verification token',
+  },
+  AUTH_VERIFY_EMAIL_TOKEN_REQUIRED: {
+    vi: 'Thiếu mã xác minh email',
+    en: 'Email verification token is required',
+  },
+  AUTH_VERIFY_EMAIL_TOKEN_INVALID: {
+    vi: 'Mã xác minh email không hợp lệ',
+    en: 'Invalid email verification token',
   },
   USER_NOT_ACTIVE: { vi: 'Tài khoản chưa được kích hoạt', en: 'User is not active' },
   FAILED_TO_RESET_PASSWORD: { vi: 'Đặt lại mật khẩu thất bại', en: 'Failed to reset password' },
@@ -70,12 +105,12 @@ export const ERROR_TRANSLATIONS = {
   },
   AUTH_PASSWORD_REQUIRED: { vi: 'Vui lòng nhập mật khẩu', en: 'Password is required' },
   AUTH_PASSWORD_MIN: {
-    vi: 'Mật khẩu phải có ít nhất 6 ký tự',
-    en: 'Password must be at least 6 characters long',
+    vi: 'Mật khẩu phải có ít nhất 8 ký tự',
+    en: 'Password must be at least 8 characters long',
   },
   AUTH_PASSWORD_MAX: {
-    vi: 'Mật khẩu không được quá 25 ký tự',
-    en: 'Password must be less than 25 characters long',
+    vi: 'Mật khẩu không được quá 100 ký tự',
+    en: 'Password must be at most 100 characters long',
   },
   AUTH_PASSWORD_LOWERCASE: {
     vi: 'Mật khẩu phải có ít nhất một chữ thường (a-z)',

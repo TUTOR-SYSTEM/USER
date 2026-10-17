@@ -45,7 +45,7 @@ describe('route authorization metadata (HTTP controllers)', () => {
 
     it.each([
       // Self-service routes: any authenticated user, scoped by @CurrentUser() in the handler.
-      ['GET /', undefined],
+      ['GET /', ['ADMIN']],
       ['GET /detail-user', undefined],
       ['PUT /', undefined],
       ['POST change-password', undefined],

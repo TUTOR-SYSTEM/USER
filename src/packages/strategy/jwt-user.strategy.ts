@@ -7,7 +7,8 @@ import { ConfigService } from '@nestjs/config';
 @Injectable()
 export class JwtUserStrategy extends PassportStrategy(Strategy, 'jwt-user') {
   constructor(configService: ConfigService) {
-    const secret: string = configService.get<string>('JWT_ACCESS_SECRET') ?? 'dev-insecure-secret';
+    const secret = configService.get<string>('JWT_ACCESS_SECRET')?.trim();
+    if (!secret) throw new Error('JWT_ACCESS_SECRET must be set');
     const opts: StrategyOptions = {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,

@@ -5,3 +5,5 @@ export * from './generate.helper';
 export * from './checkEnv.helper';
 export * from './file.helper';
 export * from './session.helper';
+export * from './session-check.helper';
+export * from './rpc-actor.helper';

@@ -34,6 +34,8 @@ import {
   type GetUsersQueryDto,
   type UpdateUserDto,
   updateUserSchema,
+  updateUserStatusSchema,
+  type UpdateUserStatusDto,
   type UserDataFieldDto,
 } from '@packages/entities/user';
 import { actorFrom, UserService } from './user.service';
@@ -67,10 +69,11 @@ export class UserController {
     description: USER_SWAGGER_MESSAGES.GET_USERS_SUCCESSFULLY,
   })
   async getUsers(
+    @CurrentUser() user: Record<string, string>,
     @Query(new ZodValidationPipe<GetUsersQueryDto>(getUsersQuerySchema))
     query: GetUsersQueryDto,
   ): Promise<GetUsersResponse> {
-    return await this.userService.getUsersService(query);
+    return await this.userService.getUsersService(query, actorFrom(user));
   }
 
   @Get('/detail-user')
@@ -102,10 +105,11 @@ export class UserController {
     description: USER_SWAGGER_MESSAGES.GET_USER_BY_FIELD_SUCCESSFULLY,
   })
   async getUserByField(
+    @CurrentUser() user: Record<string, string>,
     @Query(new ZodValidationPipe(dataFieldSchema))
     dataFieldDto: UserDataFieldDto,
   ): Promise<unknown> {
-    return await this.userService.findUsersByFieldPublic(dataFieldDto);
+    return await this.userService.findUsersByFieldPublic(dataFieldDto, actorFrom(user));
   }
 
   @UseGuards(RolesGuard)
@@ -194,8 +198,14 @@ export class UserController {
   async updateStatusUserController(
     @CurrentUser() user: Record<string, string>,
     @Param('id') id: string,
+    @Body(new ZodValidationPipe(updateUserStatusSchema))
+    body: UpdateUserStatusDto,
   ) {
-    return await this.userService.updateStatusUserService({ id: id, actor: actorFrom(user) });
+    return await this.userService.updateStatusUserService({
+      id,
+      isActive: body.isActive,
+      actor: actorFrom(user),
+    });
   }
 
   @UseGuards(RolesGuard)

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -16,7 +17,7 @@ import type {
   GetStudentsQueryDto,
   UpdateStudentDto,
 } from '@packages/entities/student';
-import type { JwtGuardUser } from '../../packages/guards/jwt-auth.guard';
+import type { UserActor } from '../user/user.service';
 import { StudentRepository } from './student.repository';
 import { checkUuidValid, generateCode, generateRandomPassword, hashData } from '@packages/helpers';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +33,22 @@ function assertStudentId(id: string): void {
   if (!id || !checkUuidValid({ data: id })) {
     throw new BadRequestException(ERROR_MESSAGES.USER_ID_MUST_BE_UUID);
   }
+}
+
+/**
+ * Student management is open to ADMIN and TUTOR. A TUTOR only reaches students whose `tutorId` is
+ * their own; ADMIN bypasses ownership.
+ */
+function assertStaff(actor: UserActor): void {
+  if (actor.role !== 'ADMIN' && actor.role !== 'TUTOR') {
+    throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+  }
+}
+
+function assertCanManage(actor: UserActor, student: { tutorId: string | null }): void {
+  if (actor.role === 'ADMIN') return;
+  if (actor.role === 'TUTOR' && student.tutorId === actor.id) return;
+  throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
 }
 
 @Injectable()
@@ -101,7 +118,10 @@ export class StudentService {
    * Create a new student, auto-creating a linked PARENT account when parent info is supplied.
    * The creating user (tutor/admin) is recorded as `tutorId` on both records.
    */
-  async create(dto: CreateStudentDto, currentUser: JwtGuardUser) {
+  async create(dto: CreateStudentDto, actor: UserActor) {
+    assertStaff(actor);
+    // The creating tutor owns the new records; an admin creates them unowned.
+    const tutorId = actor.role === 'TUTOR' ? actor.id : null;
     // 1. Resolve the student code: if the client supplied one, it must be free — reject the
     // request instead of silently generating a different code. Otherwise, auto-generate one.
     let studentCode: string;
@@ -142,7 +162,7 @@ export class StudentService {
         phone: dto.parentPhone ?? null,
         relationship: dto.parentRelationship ?? null,
         gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
-        tutorId: currentUser.id,
+        tutorId,
       });
       parentId = parent.id;
     }
@@ -162,14 +182,18 @@ export class StudentService {
       dateOfBirth: null,
       school: dto.school ?? null,
       parentId,
-      tutorId: currentUser.id,
+      tutorId,
     });
 
     return omitPassword(student);
   }
 
-  async findAll(query: GetStudentsQueryDto) {
-    const { students, pagination } = await this.repo.getAllStudents({ query });
+  async findAll(query: GetStudentsQueryDto, actor: UserActor) {
+    assertStaff(actor);
+    // A tutor's list is always scoped to their own students, whatever `tutorId` the query asks for.
+    const scoped: GetStudentsQueryDto =
+      actor.role === 'TUTOR' ? { ...query, tutorId: actor.id } : query;
+    const { students, pagination } = await this.repo.getAllStudents({ query: scoped });
 
     return {
       students: students.map((s) => ({
@@ -216,10 +240,12 @@ export class StudentService {
     };
   }
 
-  async findById(id: string) {
+  async findById(id: string, actor: UserActor) {
+    assertStaff(actor);
     assertStudentId(id);
     const user = await this.repo.findById({ id });
     if (!user) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
+    assertCanManage(actor, user);
 
     const parent = user.parent;
 
@@ -268,10 +294,12 @@ export class StudentService {
     };
   }
 
-  async update(id: string, dto: UpdateStudentDto) {
+  async update(id: string, dto: UpdateStudentDto, actor: UserActor) {
+    assertStaff(actor);
     assertStudentId(id);
     const student = await this.repo.findById({ id });
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
+    assertCanManage(actor, student);
 
     // ── student fields ──
     const studentUpdate: Partial<typeof users.$inferInsert> = {};
@@ -362,10 +390,12 @@ export class StudentService {
     return omitPassword(updated);
   }
 
-  async delete(id: string) {
+  async delete(id: string, actor: UserActor) {
+    assertStaff(actor);
     assertStudentId(id);
     const student = await this.repo.findById({ id });
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
+    assertCanManage(actor, student);
     await this.repo.delete({ id });
     return { id };
   }

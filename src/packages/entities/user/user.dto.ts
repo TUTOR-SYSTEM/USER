@@ -6,6 +6,7 @@ import {
   updateGradeSchema,
   updateUserGradesSchema,
   updateUserSchema,
+  updateUserStatusSchema,
 } from './user.schema';
 
 // ?params: export type from schemas
@@ -20,6 +21,7 @@ export type CreateUserDto = z.infer<typeof createUserSchema>;
  */
 export type CreateUserInput = z.input<typeof createUserSchema>;
 export type UpdateUserDto = z.infer<typeof updateUserSchema>;
+export type UpdateUserStatusDto = z.infer<typeof updateUserStatusSchema>;
 export type ChangePasswordValues = {
   currentPassword: string;
   newPassword: string;
@@ -37,6 +39,7 @@ export type User = {
   avatar: string | null;
   phone: string | null;
   isActive: boolean | null;
+  emailVerified: boolean;
   role: string | null;
   gradesId: string[];
   createdAt: Date;
@@ -58,10 +61,29 @@ export type UserListResponseDto = {
 export type UpdateGradeDto = z.infer<typeof updateGradeSchema>;
 export type UpdateUserGradesDto = z.infer<typeof updateUserGradesSchema>;
 
+/** Public projection of a user row (no password hash) — the shape the UI's `ApiManagedUser` reads. */
+export type PublicUser = Omit<User, 'password'>;
+
 export type CreateUserResponseDto = {
   message: string;
-  data: {
-    email: string;
-    fullName: string;
-  };
+  data: PublicUser;
+};
+
+/** One row of the paginated user list (UI `ApiManagedUser`). */
+export type ManagedUserListItem = {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  avatar: string | null;
+  role: string;
+  isActive: boolean;
+  createdAt: string;
+};
+
+/** Paginated list shape shared by `GET /users` and `user.getUsers` (UI: `ManagedUsersApiPayload`). */
+export type ManagedUsersListDto = {
+  users: ManagedUserListItem[];
+  pagination: { total: number; page: number; limit: number; totalPages: number };
 };

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { newPasswordSchema } from '../auth/password.schema';
 
 /**
  * Admin-managed accounts (TUTOR / STUDENT).
@@ -7,39 +8,6 @@ import { z } from 'zod';
  * (`/admin/tutors` → TUTOR, `/admin/students` → STUDENT). These schemas therefore
  * only cover the profile/credential fields the admin may set.
  */
-
-/** Shared password-complexity refinement (mirrors the auth/user rules). */
-function refinePassword(password: string, ctx: z.RefinementCtx): void {
-  if (password.length < 8 || password.length > 14) return;
-  if (!/[a-z]/.test(password)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Password must include at least one lowercase letter (a-z)',
-      path: ['password'],
-    });
-  }
-  if (!/[A-Z]/.test(password)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Password must include at least one uppercase letter (A-Z)',
-      path: ['password'],
-    });
-  }
-  if (!/\d/.test(password)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Password must include at least one digit (0-9)',
-      path: ['password'],
-    });
-  }
-  if (!/[^A-Za-z0-9]/.test(password)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Password must include at least one special character',
-      path: ['password'],
-    });
-  }
-}
 
 /** Create a tutor or student account. */
 export const createManagedUserSchema = z
@@ -64,10 +32,7 @@ export const createManagedUserSchema = z
       .trim()
       .min(2, { message: 'Last name must be at least 2 characters' })
       .max(100, { message: 'Last name must be at most 100 characters' }),
-    password: z
-      .string({ message: 'Password is required' })
-      .min(6, { message: 'Password must be at least 6 characters' })
-      .max(20, { message: 'Password must be at most 20 characters' }),
+    password: newPasswordSchema,
     phone: z.string().trim().max(20, { message: 'Phone must be at most 20 characters' }).optional(),
     gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
     dateOfBirth: z.coerce.date().optional(),
@@ -82,8 +47,7 @@ export const createManagedUserSchema = z
       .optional(),
     isActive: z.boolean().optional().default(true),
   })
-  .strict()
-  .superRefine((data, ctx) => refinePassword(data.password, ctx));
+  .strict();
 
 /** Update a tutor or student account — every field optional, no password here. */
 export const updateManagedUserSchema = z

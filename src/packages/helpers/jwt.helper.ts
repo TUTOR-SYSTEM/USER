@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 /**
  * Narrow contract for signing — `JwtService` from `@nestjs/jwt` satisfies this structurally
  * and avoids type-resolution noise from recommended-type-checked ESLint in some setups.
@@ -22,17 +24,22 @@ export type JwtTokenTyp = 'access' | 'refresh';
 /** Matches DB `user_role` enum — embedded on access JWTs for route guards. */
 export type JwtUserRole = 'STUDENT' | 'ADMIN' | 'TUTOR' | 'PARENT';
 
+/** `sid` ties the token to one login session (see `session.helper.ts`). Tokens without it are legacy. */
 export type JwtAccessPayload = {
   sub: string;
   email: string;
   typ: 'access';
   role: JwtUserRole;
+  sid: string;
 };
 
 export type JwtRefreshPayload = {
   sub: string;
   email: string;
   typ: 'refresh';
+  sid: string;
+  /** Random per issue, so two refreshes in the same second still produce different tokens. */
+  jti: string;
 };
 
 export type JwtPayload = JwtAccessPayload | JwtRefreshPayload;
@@ -47,7 +54,7 @@ export type JwtTokensConfig = {
 
 export async function signAccessToken(
   jwtService: JwtSignContract,
-  payload: Pick<JwtAccessPayload, 'sub' | 'email' | 'role'>,
+  payload: Pick<JwtAccessPayload, 'sub' | 'email' | 'role' | 'sid'>,
   config: JwtTokensConfig,
 ): Promise<string> {
   const body: JwtAccessPayload = { ...payload, typ: 'access' };
@@ -59,10 +66,10 @@ export async function signAccessToken(
 
 export async function signRefreshToken(
   jwtService: JwtSignContract,
-  payload: Pick<JwtRefreshPayload, 'sub' | 'email'>,
+  payload: Pick<JwtRefreshPayload, 'sub' | 'email' | 'sid'>,
   config: JwtTokensConfig,
 ): Promise<string> {
-  const body: JwtRefreshPayload = { ...payload, typ: 'refresh' };
+  const body: JwtRefreshPayload = { ...payload, typ: 'refresh', jti: randomUUID() };
   return jwtService.signAsync(body, {
     secret: config.refreshSecret,
     expiresIn: config.refreshExpiresIn,

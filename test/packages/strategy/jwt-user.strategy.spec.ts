@@ -31,9 +31,8 @@ describe('JwtUserStrategy', () => {
       )._secretOrKeyProvider({}, 'raw', (err, key) => (err ? reject(err) : resolve(key)));
     });
 
-  it('KNOWN ISSUE: falls back to a hard-coded public secret when JWT_ACCESS_SECRET is unset', async () => {
-    // Pinned to current behaviour. A token signed with this fallback would be accepted.
-    await expect(resolveSecret(build(undefined))).resolves.toBe('dev-insecure-secret');
+  it('refuses to construct without a configured secret (no hard-coded fallback)', () => {
+    expect(() => build(undefined)).toThrow('JWT_ACCESS_SECRET must be set');
   });
 
   it('uses the configured secret as the verification key', async () => {

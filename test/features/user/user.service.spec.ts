@@ -15,6 +15,7 @@ jest.mock('src/features/user/user.repository', () => ({ UserRepository: class Us
 
 const USER_ID = '6f1c2b4e-9d3a-4c7e-8b21-0a1b2c3d4e5f';
 const OTHER_ID = '0b9e7d1a-2c3f-4a5b-9c8d-7e6f5a4b3c2d';
+const ADMIN_ACTOR = { id: OTHER_ID, role: 'ADMIN' };
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -33,12 +34,13 @@ function row(overrides: Record<string, unknown> = {}) {
 describe('UserService', () => {
   let service: UserService;
   let repo: Record<string, jest.Mock>;
+  let rmq: { send: jest.Mock; emit: jest.Mock };
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     repo = {
       findByField: jest.fn().mockResolvedValue([]),
-      findById: jest.fn().mockResolvedValue(undefined),
+      findById: jest.fn().mockResolvedValue(row()),
       findWithPassword: jest.fn().mockResolvedValue(undefined),
       findUserCode: jest.fn().mockResolvedValue(undefined),
       create: jest.fn(async (data: Record<string, unknown>) => ({
@@ -52,8 +54,14 @@ describe('UserService', () => {
       buildUserListConditions: jest.fn().mockReturnValue(undefined),
       countUsers: jest.fn().mockResolvedValue(0),
       paginateUsers: jest.fn().mockResolvedValue([]),
+      countLinkedUsers: jest.fn().mockResolvedValue(0),
+      countActiveAdmins: jest.fn().mockResolvedValue(2),
     };
-    service = new UserService(repo as unknown as UserRepository);
+    rmq = {
+      send: jest.fn().mockResolvedValue({ deleted: 0 }),
+      emit: jest.fn().mockResolvedValue(undefined),
+    };
+    service = new UserService(repo as unknown as UserRepository, rmq as never);
   });
 
   afterEach(() => {
@@ -68,9 +76,19 @@ describe('UserService', () => {
       expect(repo.findByField).not.toHaveBeenCalled();
     });
 
-    it.each(['id', 'email', 'username', 'phone', 'userCode'])('searches by %s', async (field) => {
+    it.each(['email', 'username', 'phone', 'userCode'])('searches by %s', async (field) => {
       await service.getUserByField({ field, value: 'v' } as never);
       expect(repo.findByField).toHaveBeenCalledWith(field, 'v');
+    });
+
+    it('searches by id when the value is a uuid', async () => {
+      await service.getUserByField({ field: 'id', value: USER_ID } as never);
+      expect(repo.findByField).toHaveBeenCalledWith('id', USER_ID);
+    });
+
+    it('lowercases and trims an email before searching', async () => {
+      await service.getUserByField({ field: 'email', value: '  Mixed@Example.TEST ' } as never);
+      expect(repo.findByField).toHaveBeenCalledWith('email', 'mixed@example.test');
     });
 
     it('defaults a null role to STUDENT', async () => {
@@ -84,19 +102,24 @@ describe('UserService', () => {
 
   describe('getDetailUserService', () => {
     it('rejects a non-UUID id', async () => {
-      await expect(service.getDetailUserService({ id: 'nope' })).rejects.toMatchObject({
+      await expect(
+        service.getDetailUserService({ actor: ADMIN_ACTOR, id: 'nope' }),
+      ).rejects.toMatchObject({
         message: ERROR_MESSAGES.USER_ID_MUST_BE_UUID,
       });
     });
 
-    it('returns null when the user does not exist', async () => {
-      await expect(service.getDetailUserService({ id: USER_ID })).resolves.toBeNull();
+    it('returns NotFound (not a 200 with null) when the user does not exist', async () => {
+      repo.findById.mockResolvedValue(undefined);
+      await expect(
+        service.getDetailUserService({ actor: ADMIN_ACTOR, id: USER_ID }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.USER_NOT_FOUND });
     });
 
     it('returns the profile without the password hash', async () => {
       repo.findById.mockResolvedValue(row());
 
-      const user = await service.getDetailUserService({ id: USER_ID });
+      const user = await service.getDetailUserService({ actor: ADMIN_ACTOR, id: USER_ID });
 
       expect(user).not.toHaveProperty('password');
       expect(user).toMatchObject({ id: USER_ID, email: 'user@example.test' });
@@ -112,9 +135,9 @@ describe('UserService', () => {
       repo.countUsers.mockResolvedValue(total);
       repo.paginateUsers.mockResolvedValue([]);
 
-      const result = await service.getUsersService({ page: 1, limit } as never);
+      const result = await service.getUsersService({ page: 1, limit } as never, ADMIN_ACTOR);
 
-      expect(result.pagination).toEqual({ page: 1, pageSize: limit, total, totalPages: pages });
+      expect(result.pagination).toEqual({ page: 1, limit, total, totalPages: pages });
     });
 
     it('maps rows to the list shape and computes the offset from page/limit', async () => {
@@ -123,15 +146,18 @@ describe('UserService', () => {
         { ...row({ role: null, isActive: false }), createdAt: new Date('2026-01-02T00:00:00Z') },
       ]);
 
-      const result = await service.getUsersService({ page: 3, limit: 5 } as never);
+      const result = await service.getUsersService({ page: 3, limit: 5 } as never, ADMIN_ACTOR);
 
       expect(repo.paginateUsers).toHaveBeenCalledWith(undefined, 5, 10);
-      expect(result.data[0]).toEqual({
+      expect(result.users[0]).toEqual({
         id: USER_ID,
         email: 'user@example.test',
-        name: 'Ann Le',
+        firstName: 'Ann',
+        lastName: 'Le',
+        phone: null,
+        avatar: null,
         role: 'STUDENT',
-        status: 'inactive',
+        isActive: false,
         createdAt: '2026-01-02T00:00:00.000Z',
       });
     });
@@ -151,7 +177,7 @@ describe('UserService', () => {
       await expect(
         service.createUserService({ ...base, username: 'x' } as never),
       ).rejects.toMatchObject({
-        message: `${ERROR_MESSAGES.EMAIL_EXISTS}: ${base.email}`,
+        message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS,
       });
       expect(repo.create).not.toHaveBeenCalled();
     });
@@ -162,7 +188,7 @@ describe('UserService', () => {
       await expect(
         service.createUserService({ ...base, username: 'taken' } as never),
       ).rejects.toMatchObject({
-        message: `${ERROR_MESSAGES.USERNAME_EXISTS}: taken`,
+        message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS,
       });
     });
 
@@ -219,16 +245,17 @@ describe('UserService', () => {
 
   describe('updateUserService', () => {
     it('rejects a non-UUID id', async () => {
-      await expect(service.updateUserService({ id: 'x', data: {} as never })).rejects.toMatchObject(
-        {
-          message: ERROR_MESSAGES.USER_ID_MUST_BE_UUID,
-        },
-      );
+      await expect(
+        service.updateUserService({ actor: ADMIN_ACTOR, id: 'x', data: {} as never }),
+      ).rejects.toMatchObject({
+        message: ERROR_MESSAGES.USER_ID_MUST_BE_UUID,
+      });
     });
 
     it('rejects an unknown user', async () => {
+      repo.findById.mockResolvedValue(undefined);
       await expect(
-        service.updateUserService({ id: USER_ID, data: {} as never }),
+        service.updateUserService({ actor: ADMIN_ACTOR, id: USER_ID, data: {} as never }),
       ).rejects.toMatchObject({
         message: ERROR_MESSAGES.USER_NOT_FOUND,
       });
@@ -240,7 +267,11 @@ describe('UserService', () => {
         .mockResolvedValueOnce([row({ id: OTHER_ID, email: 'taken@example.test' })]); // email taken
 
       await expect(
-        service.updateUserService({ id: USER_ID, data: { email: 'taken@example.test' } as never }),
+        service.updateUserService({
+          actor: ADMIN_ACTOR,
+          id: USER_ID,
+          data: { email: 'taken@example.test' } as never,
+        }),
       ).rejects.toMatchObject({ message: ERROR_MESSAGES.EMAIL_EXISTS });
       expect(repo.update).not.toHaveBeenCalled();
     });
@@ -250,6 +281,7 @@ describe('UserService', () => {
       repo.update.mockResolvedValue(row({ firstName: 'Changed' }));
 
       const result = await service.updateUserService({
+        actor: ADMIN_ACTOR,
         id: USER_ID,
         data: { firstName: 'Changed' } as never,
       });
@@ -263,10 +295,13 @@ describe('UserService', () => {
     it('findUsersByFieldPublic returns the lookup result with the password stripped', async () => {
       repo.findByField.mockResolvedValue([row()]);
 
-      const result = await service.findUsersByFieldPublic({
-        field: 'email',
-        value: 'user@example.test',
-      } as never);
+      const result = await service.findUsersByFieldPublic(
+        {
+          field: 'email',
+          value: 'user@example.test',
+        } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({ id: USER_ID, email: 'user@example.test' });
@@ -305,11 +340,13 @@ describe('UserService', () => {
       ],
       [
         'updateStatusUserService',
-        (svc: UserService) => svc.updateStatusUserService({ id: 'not-a-uuid' }),
+        (svc: UserService) =>
+          svc.updateStatusUserService({ id: 'not-a-uuid', isActive: false, actor: ADMIN_ACTOR }),
       ],
       [
         'deleteUserByAdminService',
-        (svc: UserService) => svc.deleteUserByAdminService({ id: 'not-a-uuid' }),
+        (svc: UserService) =>
+          svc.deleteUserByAdminService({ id: 'not-a-uuid', actor: ADMIN_ACTOR }),
       ],
     ])('%s rejects a malformed id before touching the database', async (_name, call) => {
       await expect(call(service)).rejects.toMatchObject({
@@ -324,7 +361,11 @@ describe('UserService', () => {
         .mockResolvedValueOnce([row({ id: OTHER_ID, username: 'taken' })]);
 
       await expect(
-        service.updateUserService({ id: USER_ID, data: { username: 'taken' } as never }),
+        service.updateUserService({
+          actor: ADMIN_ACTOR,
+          id: USER_ID,
+          data: { username: 'taken' } as never,
+        }),
       ).rejects.toMatchObject({ message: ERROR_MESSAGES.USERNAME_EXISTS });
       expect(repo.update).not.toHaveBeenCalled();
     });
@@ -337,9 +378,9 @@ describe('UserService', () => {
         { ...row({ isActive: true }), createdAt: new Date('2026-01-02T00:00:00Z') },
       ]);
 
-      const result = await service.getUsersService({ page: 1, limit: 10 } as never);
+      const result = await service.getUsersService({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
 
-      expect(result.data[0]).toMatchObject({ status: 'active' });
+      expect(result.users[0]).toMatchObject({ isActive: true });
     });
   });
 
@@ -350,11 +391,11 @@ describe('UserService', () => {
         { ...row({ role: undefined, isActive: null }), createdAt: '2026-01-02' },
       ]);
 
-      const result = await service.getUsersService({ page: 1, limit: 10 } as never);
+      const result = await service.getUsersService({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
 
-      expect(result.data[0]).toMatchObject({
+      expect(result.users[0]).toMatchObject({
         role: 'STUDENT',
-        status: 'inactive',
+        isActive: false,
         createdAt: '2026-01-02',
       });
     });
@@ -371,8 +412,8 @@ describe('UserService', () => {
       async (field) => {
         await expect(
           service.updateOwnProfileService({
+            actor: { id: USER_ID, role: 'TUTOR' },
             id: USER_ID,
-            role: 'TUTOR',
             data: { [field]: 'x' } as never,
           }),
         ).rejects.toMatchObject({ message: ERROR_MESSAGES.CANNOT_UPDATE_RESTRICTED_FIELDS });
@@ -383,8 +424,8 @@ describe('UserService', () => {
     it.each(['firstName', 'lastName'])('blocks a STUDENT from renaming via "%s"', async (field) => {
       await expect(
         service.updateOwnProfileService({
+          actor: { id: USER_ID, role: 'STUDENT' },
           id: USER_ID,
-          role: 'STUDENT',
           data: { [field]: 'New' } as never,
         }),
       ).rejects.toMatchObject({ message: ERROR_MESSAGES.STUDENT_CANNOT_UPDATE_NAME });
@@ -393,8 +434,8 @@ describe('UserService', () => {
 
     it('allows a TUTOR to rename themselves', async () => {
       await service.updateOwnProfileService({
+        actor: { id: USER_ID, role: 'TUTOR' },
         id: USER_ID,
-        role: 'TUTOR',
         data: { firstName: 'New' } as never,
       });
 
@@ -403,17 +444,32 @@ describe('UserService', () => {
   });
 
   describe('updateStatusUserService', () => {
-    it('flips isActive on the stored value', async () => {
-      repo.findByField.mockResolvedValueOnce([row({ isActive: true })]);
+    it('writes the requested isActive value and revokes every session on deactivation', async () => {
+      repo.findById.mockResolvedValue(row({ isActive: true }));
       repo.update.mockResolvedValue(row({ isActive: false }));
 
-      await service.updateStatusUserService({ id: USER_ID });
+      await service.updateStatusUserService({ actor: ADMIN_ACTOR, id: USER_ID, isActive: false });
 
       expect(repo.update).toHaveBeenCalledWith(USER_ID, { isActive: false });
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', {
+        prefix: `session:${USER_ID}:`,
+      });
+    });
+
+    it('is idempotent: asking for the state the user already has writes nothing', async () => {
+      repo.findById.mockResolvedValue(row({ isActive: true }));
+
+      await service.updateStatusUserService({ actor: ADMIN_ACTOR, id: USER_ID, isActive: true });
+
+      expect(repo.update).not.toHaveBeenCalled();
+      expect(rmq.send).not.toHaveBeenCalled();
     });
 
     it('rejects an unknown user', async () => {
-      await expect(service.updateStatusUserService({ id: USER_ID })).rejects.toMatchObject({
+      repo.findById.mockResolvedValue(undefined);
+      await expect(
+        service.updateStatusUserService({ actor: ADMIN_ACTOR, id: USER_ID, isActive: false }),
+      ).rejects.toMatchObject({
         message: ERROR_MESSAGES.USER_NOT_FOUND,
       });
     });
@@ -423,14 +479,19 @@ describe('UserService', () => {
     it('deletes an existing user and returns the id', async () => {
       repo.findByField.mockResolvedValueOnce([row()]);
 
-      await expect(service.deleteUserByAdminService({ id: USER_ID })).resolves.toEqual({
+      await expect(
+        service.deleteUserByAdminService({ actor: ADMIN_ACTOR, id: USER_ID }),
+      ).resolves.toEqual({
         id: USER_ID,
       });
       expect(repo.delete).toHaveBeenCalledWith(USER_ID);
     });
 
     it('does not delete when the user is missing', async () => {
-      await expect(service.deleteUserByAdminService({ id: USER_ID })).rejects.toMatchObject({
+      repo.findById.mockResolvedValue(undefined);
+      await expect(
+        service.deleteUserByAdminService({ actor: ADMIN_ACTOR, id: USER_ID }),
+      ).rejects.toMatchObject({
         message: ERROR_MESSAGES.USER_NOT_FOUND,
       });
       expect(repo.delete).not.toHaveBeenCalled();
