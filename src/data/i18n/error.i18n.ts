@@ -298,6 +298,14 @@ export const ERROR_TRANSLATIONS = {
     en: 'You are not allowed to update restricted fields (role, status, code, links) on your own account',
   },
   ACCOUNT_DEACTIVATED: { vi: 'Tài khoản đã bị vô hiệu hóa', en: 'Account has been deactivated' },
+  TOO_MANY_LOGIN_ATTEMPTS: {
+    vi: 'Đăng nhập sai quá nhiều lần, vui lòng thử lại sau',
+    en: 'Too many failed sign-in attempts, please try again later',
+  },
+  OAUTH_STATE_INVALID: {
+    vi: 'Phiên đăng nhập OAuth không hợp lệ hoặc đã hết hạn',
+    en: 'Invalid or expired OAuth session',
+  },
 
   // Upload
   KEY_QUERY_PARAM_REQUIRED: {

@@ -84,7 +84,8 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
     expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.EMAIL_NOT_FOUND);
-    expect(rmq.send).not.toHaveBeenCalled();
+    // Only the lockout counter may be touched on a failed sign-in: no session is written.
+    expect(rmq.send.mock.calls.map(([pattern]) => pattern)).not.toContain('redis.set');
   });
 
   // AC2: wrong password -> 401 with its own message (distinct from an unknown email)
@@ -98,7 +99,8 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
     expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_PASSWORD);
-    expect(rmq.send).not.toHaveBeenCalled();
+    // Only the lockout counter may be touched on a failed sign-in: no session is written.
+    expect(rmq.send.mock.calls.map(([pattern]) => pattern)).not.toContain('redis.set');
   });
 
   // AC3: the success path is unchanged and the deactivated-account branch stays Unauthorized

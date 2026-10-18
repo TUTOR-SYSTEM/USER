@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -38,7 +40,7 @@ import {
 } from '@packages/helpers';
 import { UserService } from '../user/user.service';
 import { getJwtTokensConfig } from '@packages/configs/jwt-sign.config';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { checkUuidValid } from '@packages/helpers';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
@@ -51,11 +53,24 @@ const resetPasswordRedisKey = (jti: string) => `reset-password:${jti}`;
 const VERIFY_EMAIL_TOKEN_TTL_SECONDS = 86400;
 const verifyEmailRedisKey = (jti: string) => `verify-email:${jti}`;
 
+/** Failed sign-ins allowed per account inside one window before the account is locked. */
+const LOGIN_MAX_ATTEMPTS_DEFAULT = 5;
+/** Length of the failure window, counted from the first failed attempt (the lock lifts after it). */
+const LOGIN_ATTEMPT_WINDOW_SECONDS_DEFAULT = 900;
+/** Hashed identifier: the Redis key never holds the email or user code in plain text. */
+const loginFailureRedisKey = (identifier: string) =>
+  `login-fail:${createHash('sha256').update(identifier).digest('hex')}`;
+
 /** Redis round-trip budget for session/token reads: one short retry, then fail. */
 const REDIS_READ_TIMEOUT_MS = 2_000;
 const REDIS_READ_RETRIES = 1;
 
 const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
+const positiveIntOr = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 /** Payload stored behind a verify-email token: the email is bound so a later change invalidates it. */
 type VerifyEmailToken = { userId: string; email: string };
@@ -101,6 +116,8 @@ function parseRefreshTokenPayload(value: unknown): JwtRefreshPayload {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly jwtTokensConfig: JwtTokensConfig;
+  private readonly loginMaxAttempts: number;
+  private readonly loginAttemptWindowSeconds: number;
   private dummyHash?: Promise<string>;
   constructor(
     private readonly userService: UserService,
@@ -109,6 +126,77 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {
     this.jwtTokensConfig = getJwtTokensConfig(configService);
+    this.loginMaxAttempts = positiveIntOr(
+      configService.get<string>('LOGIN_MAX_ATTEMPTS'),
+      LOGIN_MAX_ATTEMPTS_DEFAULT,
+    );
+    this.loginAttemptWindowSeconds = positiveIntOr(
+      configService.get<string>('LOGIN_ATTEMPT_WINDOW_SECONDS'),
+      LOGIN_ATTEMPT_WINDOW_SECONDS_DEFAULT,
+    );
+  }
+
+  /**
+   * Per-account lockout (M-USER-3): a password guessed through many IPs still hits one counter.
+   * Runs before the account lookup, so a locked identifier gets the same answer whether or not an
+   * account exists. Fails open when Redis cannot be read: a login cannot finish without Redis
+   * anyway, since the session is stored there.
+   */
+  private async assertLoginNotLocked(identifier: string): Promise<void> {
+    let failures: string | null;
+    try {
+      failures = await this.rmqProducer.send<string | null, { key: string }>(
+        'redis.get',
+        { key: loginFailureRedisKey(identifier) },
+        REDIS_READ_TIMEOUT_MS,
+        REDIS_READ_RETRIES,
+      );
+    } catch (error) {
+      this.logger.warn('Login lockout check unavailable', error);
+      return;
+    }
+    if (Number(failures ?? 0) >= this.loginMaxAttempts) {
+      throw new HttpException(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+    }
+  }
+
+  /** Counts one failed sign-in in the window that starts at the first failure (atomic on Redis). */
+  private async recordLoginFailure(identifier: string): Promise<void> {
+    try {
+      await this.rmqProducer.send('redis.incr', {
+        key: loginFailureRedisKey(identifier),
+        windowSeconds: this.loginAttemptWindowSeconds,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to record a failed sign-in', error);
+    }
+  }
+
+  /** A successful sign-in clears the counter. Best effort: a missed delete only leaves the window. */
+  private clearLoginFailures(identifier: string): void {
+    this.rmqProducer
+      .emit('redis.del', { keys: [loginFailureRedisKey(identifier)] })
+      .catch((error: unknown) => this.logger.warn('Failed to clear login failures', error));
+  }
+
+  /** `verifyCredentials` plus the lockout bookkeeping: failures are counted, success clears them. */
+  private async verifyCredentialsWithLockout(
+    identifier: string,
+    user: User | undefined,
+    password: string,
+    notFoundCode?: string,
+  ): Promise<User> {
+    let verified: User;
+    try {
+      verified = await this.verifyCredentials(user, password, notFoundCode);
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        await this.recordLoginFailure(identifier);
+      }
+      throw error;
+    }
+    this.clearLoginFailures(identifier);
+    return verified;
   }
 
   /**
@@ -310,24 +398,32 @@ export class AuthService {
   }
 
   async loginService(loginDto: LoginDto): Promise<LoginResponseDto> {
+    const email = normalizeEmail(loginDto.email);
+    const identifier = `email:${email}`;
+    await this.assertLoginNotLocked(identifier);
+
     const [found] = await this.userService.getUserByField({
       field: 'email',
-      value: normalizeEmail(loginDto.email),
+      value: email,
     });
-    const user = await this.verifyCredentials(found, loginDto.password);
+    const user = await this.verifyCredentialsWithLockout(identifier, found, loginDto.password);
 
     return this.issueLoginResponse(user);
   }
 
   // TODO: login with userCode + password ...
   async loginByUserCodeService(dto: LoginByUserCodeDto): Promise<LoginResponseDto> {
+    const identifier = `userCode:${dto.userCode}`;
+    await this.assertLoginNotLocked(identifier);
+
     const rows = await this.userService.getUserByField({
       field: 'userCode',
       value: dto.userCode,
     });
 
     const found = rows.find((u) => u.role === dto.role);
-    const user = await this.verifyCredentials(
+    const user = await this.verifyCredentialsWithLockout(
+      identifier,
       found,
       dto.password,
       ERROR_MESSAGES.USER_CODE_NOT_FOUND,
@@ -383,8 +479,9 @@ export class AuthService {
   async resetPasswordService(
     resetPasswordDto: ResetPasswordDto,
   ): Promise<ResetPasswordResponseDto> {
-    const key = resetPasswordRedisKey(resetPasswordDto.jti);
-    const userId = await this.redisGet(key);
+    // The token is consumed by the read itself (GETDEL): of two concurrent resets with the same
+    // jti, only one gets the user id.
+    const userId = await this.redisGetAndDelete(resetPasswordRedisKey(resetPasswordDto.jti));
     if (!userId) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_PASSWORD_TOKEN);
     }
@@ -392,12 +489,6 @@ export class AuthService {
     await this.updateUserPasswordService({ userId, password: resetPasswordDto.password });
     // Replying to the reset mail proves the user controls the mailbox.
     await this.userService.setEmailVerifiedService({ id: userId, emailVerified: true });
-
-    // Best-effort cleanup: the password is already changed, so a delete failure here (token
-    // stays until its TTL expires) must not fail the response.
-    this.rmqProducer
-      .emit('redis.del', { keys: [key] })
-      .catch((error: unknown) => this.logger.warn(`Failed to delete reset token ${key}`, error));
 
     return { ok: true };
   }
@@ -460,6 +551,24 @@ export class AuthService {
       );
     } catch (error) {
       this.logger.warn(`Redis read failed for ${key}`, error);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
+    }
+  }
+
+  /**
+   * Single-use read (GETDEL) for reset tokens. No retry: a retried call after a lost reply would
+   * find the key already gone. The key is not logged, since it carries the reset token.
+   */
+  private async redisGetAndDelete(key: string): Promise<string | null> {
+    try {
+      return await this.rmqProducer.send<string | null, { key: string }>(
+        'redis.getdel',
+        { key },
+        REDIS_READ_TIMEOUT_MS,
+        0,
+      );
+    } catch (error) {
+      this.logger.warn('Redis read-and-delete failed', error);
       throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
     }
   }

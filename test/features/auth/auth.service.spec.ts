@@ -138,7 +138,10 @@ describe('AuthService', () => {
 
     it('refuses the login when the session cannot be stored (awaited, not fire-and-forget)', async () => {
       userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
-      rmq.send.mockRejectedValueOnce(new Error('redis down'));
+      rmq.send.mockImplementation(async (pattern: string) => {
+        if (pattern === 'redis.get') return null;
+        throw new Error('redis down');
+      });
       await expect(
         service.loginService({ email: 'a@b.test', password: 'correct-password' }),
       ).rejects.toThrow('redis down');
@@ -167,7 +170,11 @@ describe('AuthService', () => {
     it('reports an unknown user code as USER_CODE_NOT_FOUND', async () => {
       userService.getUserByField.mockResolvedValue([]);
       await expect(
-        service.loginByUserCodeService({ userCode: '123456', password: 'x', role: 'STUDENT' } as never),
+        service.loginByUserCodeService({
+          userCode: '123456',
+          password: 'x',
+          role: 'STUDENT',
+        } as never),
       ).rejects.toMatchObject({ message: ERROR_MESSAGES.USER_CODE_NOT_FOUND });
     });
 

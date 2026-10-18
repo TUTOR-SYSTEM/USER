@@ -1,6 +1,11 @@
 import { Body, Controller, Get, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuthGuard } from '@nestjs/passport';
+import {
+  FacebookOAuthCallbackGuard,
+  FacebookOAuthStartGuard,
+  GoogleOAuthCallbackGuard,
+  GoogleOAuthStartGuard,
+} from '@packages/guards/oauth-state.guard';
 import {
   ApiTags,
   ApiOperation,
@@ -260,7 +265,7 @@ export class AuthController {
 
   @Public()
   @Get('google')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthStartGuard)
   @ApiOperation({
     summary: 'Google OAuth login',
     description: 'Redirect to Google consent screen for authentication',
@@ -272,7 +277,7 @@ export class AuthController {
 
   @Public()
   @Get('google/callback')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthCallbackGuard)
   @ApiOperation({
     summary: 'Google OAuth callback',
     description: 'Handle Google OAuth callback and return JWT tokens',
@@ -300,7 +305,7 @@ export class AuthController {
   // GET /auth/facebook
   @Public()
   @Get('facebook')
-  @UseGuards(AuthGuard('facebook'))
+  @UseGuards(FacebookOAuthStartGuard)
   @ApiOperation({
     summary: 'Facebook OAuth login',
     description: 'Redirect to Facebook consent screen for authentication',
@@ -313,7 +318,7 @@ export class AuthController {
   // GET /auth/facebook/callback
   @Public()
   @Get('facebook/callback')
-  @UseGuards(AuthGuard('facebook'))
+  @UseGuards(FacebookOAuthCallbackGuard)
   @ApiOperation({
     summary: 'Facebook OAuth callback',
     description: 'Handle Facebook OAuth callback and return JWT tokens',
