@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -13,8 +14,9 @@ import type {
   UpdateManagedUserDto,
   UpdateManagedStudentDto,
 } from '@packages/entities/admin';
-import { checkUuidValid, generateCode, hashData, loginSessionRedisKey } from '@packages/helpers';
+import { checkUuidValid, generateCode, hashData, revokeAllUserSessions } from '@packages/helpers';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
+import type { UserActor } from '../user/user.service';
 import { AdminRepository, type ManagedRole } from './admin.repository';
 
 @Injectable()
@@ -26,37 +28,52 @@ export class AdminService {
     private readonly rmqProducer: RmqProducer,
   ) {}
 
+  // Every public method takes the verified caller (`actor`) and is ADMIN-only: the admin surface
+  // manages accounts other than the caller's, so there is no ownership to check instead.
+
   // ─── Tutors ────────────────────────────────────────────────────────
-  createTutor(dto: CreateManagedUserDto) {
+  async createTutor(dto: CreateManagedUserDto, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.createManagedUser(dto, 'TUTOR');
   }
 
-  listTutors(query: ListManagedUsersQueryDto) {
+  async listTutors(query: ListManagedUsersQueryDto, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.listManagedUsers('TUTOR', query);
   }
 
-  getTutor(id: string) {
+  async getTutor(id: string, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.getManagedUser(id, 'TUTOR');
   }
 
-  updateTutor(id: string, dto: UpdateManagedUserDto) {
+  async updateTutor(id: string, dto: UpdateManagedUserDto, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.updateManagedUser(id, 'TUTOR', dto);
   }
 
-  deleteTutor(id: string) {
+  async deleteTutor(id: string, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.deleteManagedUser(id, 'TUTOR');
   }
 
   // ─── Students ──────────────────────────────────────────────────────
-  createStudent(dto: CreateManagedUserDto) {
+  async createStudent(dto: CreateManagedUserDto, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.createManagedUser(dto, 'STUDENT');
   }
 
-  listStudents(query: ListManagedUsersQueryDto) {
+  async listStudents(query: ListManagedUsersQueryDto, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.listManagedUsers('STUDENT', query);
   }
 
-  async getStudent(id: string) {
+  async getStudent(id: string, actor: UserActor) {
+    this.assertAdmin(actor);
+    return this.getStudentDetail(id);
+  }
+
+  private async getStudentDetail(id: string) {
     this.assertUuid(id);
     const { parentId, ...row } = (await this.adminRepository.findStudentDetail(id)) ?? {};
     if (!row.id) {
@@ -67,7 +84,8 @@ export class AdminService {
     return { ...this.mapRow(row), parent };
   }
 
-  async updateStudent(id: string, dto: UpdateManagedStudentDto) {
+  async updateStudent(id: string, dto: UpdateManagedStudentDto, actor: UserActor) {
+    this.assertAdmin(actor);
     if (dto.userCode) {
       const [existing] = await this.adminRepository.findByUserCode(dto.userCode.trim());
       if (existing && existing.id !== id) {
@@ -86,10 +104,11 @@ export class AdminService {
     }
 
     await this.updateManagedUser(id, 'STUDENT', dto);
-    return this.getStudent(id);
+    return this.getStudentDetail(id);
   }
 
-  deleteStudent(id: string) {
+  async deleteStudent(id: string, actor: UserActor) {
+    this.assertAdmin(actor);
     return this.deleteManagedUser(id, 'STUDENT');
   }
 
@@ -100,7 +119,7 @@ export class AdminService {
     const email = dto.email.trim().toLowerCase();
     const [existingByEmail] = await this.adminRepository.findByEmail(email);
     if (existingByEmail) {
-      throw new ConflictException(`${ERROR_MESSAGES.EMAIL_EXISTS}: ${email}`);
+      throw new ConflictException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
     }
 
     const username = dto.username?.trim()
@@ -186,8 +205,8 @@ export class AdminService {
         role === 'TUTOR' ? ERROR_MESSAGES.TUTOR_NOT_FOUND : ERROR_MESSAGES.STUDENT_NOT_FOUND,
       );
     }
-    // A deactivated account must not keep its gateway session alive.
-    if (dto.isActive === false) await this.revokeLoginSession(id);
+    // A deactivated account must not keep any of its sessions alive.
+    if (dto.isActive === false) await revokeAllUserSessions(this.rmqProducer, id);
     return this.mapRow(updated);
   }
 
@@ -205,16 +224,15 @@ export class AdminService {
     }
     const deleted = await this.adminRepository.deleteByIdAndRole(id, role);
     if (!deleted) throw notFound();
-    await this.revokeLoginSession(id);
+    await revokeAllUserSessions(this.rmqProducer, id);
     return { id: deleted.id };
   }
 
-  /** Deletes `session:{userId}` so the gateway rejects the user's existing access tokens. */
-  private async revokeLoginSession(userId: string): Promise<void> {
-    await this.rmqProducer.emit('redis.del', { keys: [loginSessionRedisKey(userId)] });
+  // ─── Helpers ───────────────────────────────────────────────────────
+  private assertAdmin(actor: UserActor): void {
+    if (actor.role !== 'ADMIN') throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
   }
 
-  // ─── Helpers ───────────────────────────────────────────────────────
   private assertUuid(id: string) {
     if (!checkUuidValid({ data: id })) {
       throw new BadRequestException(ERROR_MESSAGES.ADMIN_INVALID_ID);
@@ -250,7 +268,7 @@ export class AdminService {
   private async ensureUniqueUsername(username: string): Promise<string> {
     const [existing] = await this.adminRepository.findByUsername(username);
     if (existing) {
-      throw new ConflictException(`${ERROR_MESSAGES.USERNAME_EXISTS}: ${username}`);
+      throw new ConflictException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
     }
     return username;
   }

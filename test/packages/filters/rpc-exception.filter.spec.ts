@@ -51,10 +51,10 @@ describe('RpcExceptionFilter', () => {
     });
   });
 
-  it('wraps a plain Error as 500 with its message', async () => {
+  it('wraps a plain Error as 500 with a generic message (never leaks the original)', async () => {
     await expect(run(new Error('db exploded'))).resolves.toEqual({
       statusCode: 500,
-      message: 'db exploded',
+      message: 'Internal server error',
       serviceName: 'user-service',
     });
   });

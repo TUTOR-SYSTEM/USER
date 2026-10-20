@@ -4,17 +4,19 @@ import { ERROR_MESSAGES } from 'src/data/constants';
 import { DRIZZLE } from 'src/database/database.module';
 import { StudentService } from 'src/features/student/student.service';
 import { StudentRepository } from 'src/features/student/student.repository';
-import { generateCode, hashData } from '@packages/helpers';
+import { generateCode, generateRandomPassword, hashData } from '@packages/helpers';
 import type { JwtGuardUser } from 'src/packages/guards/jwt-auth.guard';
 
 jest.mock('@packages/helpers', () => ({
   ...jest.requireActual('@packages/helpers'),
   generateCode: jest.fn(),
+  generateRandomPassword: jest.fn(),
   hashData: jest.fn(),
 }));
 
 const mockedGenerateCode = generateCode as jest.Mock;
 const mockedHashData = hashData as jest.Mock;
+const mockedRandomPassword = generateRandomPassword as jest.Mock;
 
 const TUTOR: JwtGuardUser = {
   id: '22222222-2222-4222-8222-222222222222',
@@ -23,6 +25,7 @@ const TUTOR: JwtGuardUser = {
   role: 'TUTOR',
 };
 
+const ADMIN_ACTOR = { id: '55555555-5555-4555-8555-555555555555', role: 'ADMIN' };
 const STUDENT_ID = '33333333-3333-4333-8333-333333333333';
 const PARENT_ID = '44444444-4444-4444-8444-444444444444';
 
@@ -48,11 +51,15 @@ describe('StudentService', () => {
     findById: jest.Mock;
     update: jest.Mock;
     updateParent: jest.Mock;
+    findParentById: jest.Mock;
     delete: jest.Mock;
   };
   let db: ReturnType<typeof makeDb>;
 
   const build = async (usernameRows: DbRows[] = []) => {
+    // create() generates the student's default password first, then the parent's.
+    mockedRandomPassword.mockReset();
+    mockedRandomPassword.mockReturnValueOnce('Student@123456').mockReturnValueOnce('Parent@123456');
     db = makeDb(usernameRows);
     repo = {
       getStudentByField: jest.fn().mockResolvedValue(undefined),
@@ -62,6 +69,7 @@ describe('StudentService', () => {
       findById: jest.fn(),
       update: jest.fn(),
       updateParent: jest.fn(),
+      findParentById: jest.fn(),
       delete: jest.fn(),
     };
     const moduleRef = await Test.createTestingModule({
@@ -334,7 +342,7 @@ describe('StudentService', () => {
         pagination: { total: 1, page: 1, limit: 10, totalPages: 1 },
       });
       const query = { page: 1, limit: 10 } as never;
-      const result = await service.findAll(query);
+      const result = await service.findAll(query, ADMIN_ACTOR);
 
       expect(repo.getAllStudents).toHaveBeenCalledWith({ query });
       expect(result.pagination).toEqual({ total: 1, page: 1, limit: 10, totalPages: 1 });
@@ -356,7 +364,7 @@ describe('StudentService', () => {
         students: [{ ...raw, parentId: null, parent: null }],
         pagination: { total: 1, page: 1, limit: 10, totalPages: 1 },
       });
-      const { students } = await service.findAll({ page: 1, limit: 10 } as never);
+      const { students } = await service.findAll({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
       expect(students[0]).toMatchObject({
         parentId: null,
         parentName: null,
@@ -372,7 +380,7 @@ describe('StudentService', () => {
         students: [{ ...raw, dateOfBirth: '2010-05-01', createdAt: '2026-01-01', updatedAt: 42 }],
         pagination: { total: 1, page: 1, limit: 10, totalPages: 1 },
       });
-      const { students } = await service.findAll({ page: 1, limit: 10 } as never);
+      const { students } = await service.findAll({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
       expect(students[0].dateOfBirth).toBe('2010-05-01');
       expect(students[0].createdAt).toBe('2026-01-01');
       expect(students[0].updatedAt).toBe('42');
@@ -381,7 +389,7 @@ describe('StudentService', () => {
     it('returns an empty list untouched', async () => {
       const pagination = { total: 0, page: 1, limit: 10, totalPages: 0 };
       repo.getAllStudents.mockResolvedValue({ students: [], pagination });
-      await expect(service.findAll({ page: 1, limit: 10 } as never)).resolves.toEqual({
+      await expect(service.findAll({ page: 1, limit: 10 } as never, ADMIN_ACTOR)).resolves.toEqual({
         students: [],
         pagination,
       });
@@ -391,8 +399,10 @@ describe('StudentService', () => {
   describe('findById', () => {
     it('throws NotFound when the student does not exist', async () => {
       repo.findById.mockResolvedValue(null);
-      await expect(service.findById(STUDENT_ID)).rejects.toThrow(NotFoundException);
-      await expect(service.findById(STUDENT_ID)).rejects.toThrow(ERROR_MESSAGES.STUDENT_NOT_FOUND);
+      await expect(service.findById(STUDENT_ID, ADMIN_ACTOR)).rejects.toThrow(NotFoundException);
+      await expect(service.findById(STUDENT_ID, ADMIN_ACTOR)).rejects.toThrow(
+        ERROR_MESSAGES.STUDENT_NOT_FOUND,
+      );
     });
 
     it('returns the full profile with parent nested', async () => {
@@ -431,7 +441,7 @@ describe('StudentService', () => {
         },
       });
 
-      const result = await service.findById(STUDENT_ID);
+      const result = await service.findById(STUDENT_ID, ADMIN_ACTOR);
       expect(repo.findById).toHaveBeenCalledWith({ id: STUDENT_ID });
       expect(result).toMatchObject({
         id: STUDENT_ID,
@@ -453,7 +463,7 @@ describe('StudentService', () => {
         updatedAt: new Date(0),
         dateOfBirth: null,
       });
-      const result = await service.findById(STUDENT_ID);
+      const result = await service.findById(STUDENT_ID, ADMIN_ACTOR);
       expect(result).toMatchObject({
         parent: null,
         parentName: null,
@@ -480,22 +490,22 @@ describe('StudentService', () => {
 
     it('throws NotFound before writing anything', async () => {
       repo.findById.mockResolvedValue(null);
-      await expect(service.update(STUDENT_ID, { school: 'X' } as never)).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.update(STUDENT_ID, { school: 'X' } as never, ADMIN_ACTOR),
+      ).rejects.toThrow(NotFoundException);
       expect(repo.update).not.toHaveBeenCalled();
       expect(repo.updateParent).not.toHaveBeenCalled();
     });
 
     it('does not touch the DB write path for an empty payload', async () => {
-      await service.update(STUDENT_ID, {} as never);
+      await service.update(STUDENT_ID, {} as never, ADMIN_ACTOR);
       expect(repo.update).not.toHaveBeenCalled();
       expect(repo.updateParent).not.toHaveBeenCalled();
       expect(repo.createParent).not.toHaveBeenCalled();
     });
 
     it('splits studentName into first/last on update', async () => {
-      await service.update(STUDENT_ID, { studentName: 'Le Thi Hong' } as never);
+      await service.update(STUDENT_ID, { studentName: 'Le Thi Hong' } as never, ADMIN_ACTOR);
       expect(repo.update).toHaveBeenCalledWith({
         id: STUDENT_ID,
         data: { firstName: 'Le', lastName: 'Thi Hong' },
@@ -503,19 +513,27 @@ describe('StudentService', () => {
     });
 
     it('maps empty-string optional scalars to null but keeps non-empty values', async () => {
-      await service.update(STUDENT_ID, {
-        studentPhone: '',
-        school: '',
-        address: '',
-        district: '',
-        province: '',
-      } as never);
+      await service.update(
+        STUDENT_ID,
+        {
+          studentPhone: '',
+          school: '',
+          address: '',
+          district: '',
+          province: '',
+        } as never,
+        ADMIN_ACTOR,
+      );
       expect(repo.update).toHaveBeenCalledWith({
         id: STUDENT_ID,
         data: { phone: null, school: null, address: null, district: null, province: null },
       });
 
-      await service.update(STUDENT_ID, { studentPhone: '0999', address: 'Somewhere' } as never);
+      await service.update(
+        STUDENT_ID,
+        { studentPhone: '0999', address: 'Somewhere' } as never,
+        ADMIN_ACTOR,
+      );
       expect(repo.update).toHaveBeenLastCalledWith({
         id: STUDENT_ID,
         data: { phone: '0999', address: 'Somewhere' },
@@ -524,7 +542,11 @@ describe('StudentService', () => {
 
     it('writes gender, birthday, and avatar (including explicit null avatar)', async () => {
       const birthday = new Date('2011-02-03T00:00:00.000Z');
-      await service.update(STUDENT_ID, { gender: 'FEMALE', birthday, avatar: null } as never);
+      await service.update(
+        STUDENT_ID,
+        { gender: 'FEMALE', birthday, avatar: null } as never,
+        ADMIN_ACTOR,
+      );
       expect(repo.update).toHaveBeenCalledWith({
         id: STUDENT_ID,
         data: { gender: 'FEMALE', dateOfBirth: birthday, avatar: null },
@@ -532,22 +554,26 @@ describe('StudentService', () => {
     });
 
     it('does not create a parent when parent fields are sent without parentName', async () => {
-      await service.update(STUDENT_ID, { parentPhone: '0900' } as never);
+      await service.update(STUDENT_ID, { parentPhone: '0900' } as never, ADMIN_ACTOR);
       expect(repo.createParent).not.toHaveBeenCalled();
       expect(repo.updateParent).not.toHaveBeenCalled();
     });
 
     it('updates the linked parent row (not the student row) for parent fields', async () => {
       repo.findById.mockResolvedValue({ ...existing, parentId: PARENT_ID });
-      await service.update(STUDENT_ID, {
-        parentName: 'Pham Van D',
-        parentPhone: '',
-        parentEmail: 'new@example.com',
-        parentRelationship: 'GUARDIAN',
-        parentAddress: '',
-        parentDistrict: 'Q1',
-        parentProvince: '',
-      } as never);
+      await service.update(
+        STUDENT_ID,
+        {
+          parentName: 'Pham Van D',
+          parentPhone: '',
+          parentEmail: 'new@example.com',
+          parentRelationship: 'GUARDIAN',
+          parentAddress: '',
+          parentDistrict: 'Q1',
+          parentProvince: '',
+        } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.updateParent).toHaveBeenCalledWith({
         id: PARENT_ID,
@@ -568,21 +594,29 @@ describe('StudentService', () => {
 
     it('does not call updateParent when a linked parent receives no effective parent change', async () => {
       repo.findById.mockResolvedValue({ ...existing, parentId: PARENT_ID });
-      await service.update(STUDENT_ID, { parentName: undefined, parentPhone: undefined } as never);
+      await service.update(
+        STUDENT_ID,
+        { parentName: undefined, parentPhone: undefined } as never,
+        ADMIN_ACTOR,
+      );
       expect(repo.updateParent).not.toHaveBeenCalled();
     });
 
     it('creates a parent and links it when none exists yet', async () => {
       mockedGenerateCode.mockReturnValueOnce('PARNEW');
       repo.createParent.mockResolvedValue({ id: 'new-parent-id' });
-      await service.update(STUDENT_ID, {
-        parentName: 'Vu Thi E',
-        parentRelationship: 'MOTHER',
-        parentPhone: '0988',
-        parentAddress: '1 Street',
-        parentDistrict: 'D',
-        parentProvince: 'P',
-      } as never);
+      await service.update(
+        STUDENT_ID,
+        {
+          parentName: 'Vu Thi E',
+          parentRelationship: 'MOTHER',
+          parentPhone: '0988',
+          parentAddress: '1 Street',
+          parentDistrict: 'D',
+          parentProvince: 'P',
+        } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.createParent).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -608,13 +642,17 @@ describe('StudentService', () => {
 
     it('skips the address write for a newly created parent when no address fields are given', async () => {
       repo.createParent.mockResolvedValue({ id: 'p2' });
-      await service.update(STUDENT_ID, { parentName: 'Vu Thi E' } as never);
+      await service.update(STUDENT_ID, { parentName: 'Vu Thi E' } as never, ADMIN_ACTOR);
       expect(repo.updateParent).not.toHaveBeenCalled();
       expect(repo.update).toHaveBeenCalledWith({ id: STUDENT_ID, data: { parentId: 'p2' } });
     });
 
     it('does nothing for parent fields when unlinked and parentName is empty', async () => {
-      await service.update(STUDENT_ID, { parentName: '', parentPhone: '0900' } as never);
+      await service.update(
+        STUDENT_ID,
+        { parentName: '', parentPhone: '0900' } as never,
+        ADMIN_ACTOR,
+      );
       expect(repo.createParent).not.toHaveBeenCalled();
       expect(repo.updateParent).not.toHaveBeenCalled();
       expect(repo.update).not.toHaveBeenCalled();
@@ -622,7 +660,9 @@ describe('StudentService', () => {
 
     it('returns the updated row from repo.update', async () => {
       repo.update.mockResolvedValueOnce({ id: STUDENT_ID, school: 'Z' });
-      await expect(service.update(STUDENT_ID, { school: 'Z' } as never)).resolves.toEqual({
+      await expect(
+        service.update(STUDENT_ID, { school: 'Z' } as never, ADMIN_ACTOR),
+      ).resolves.toEqual({
         id: STUDENT_ID,
         school: 'Z',
       });
@@ -630,7 +670,9 @@ describe('StudentService', () => {
 
     it('falls back to the pre-update row when repo.update returns null', async () => {
       repo.update.mockResolvedValueOnce(null);
-      await expect(service.update(STUDENT_ID, { school: 'Z' } as never)).resolves.toBe(existing);
+      await expect(
+        service.update(STUDENT_ID, { school: 'Z' } as never, ADMIN_ACTOR),
+      ).resolves.toEqual(existing);
     });
   });
 
@@ -671,7 +713,7 @@ describe('StudentService', () => {
         updatedAt: 42,
       });
 
-      const result = await service.findById(STUDENT_ID);
+      const result = await service.findById(STUDENT_ID, ADMIN_ACTOR);
 
       expect(result.dateOfBirth).toBe('2010-05-01');
       expect(result.createdAt).toBe('2026-01-01');
@@ -692,7 +734,7 @@ describe('StudentService', () => {
         updatedAt: new Date('2026-01-02T00:00:00Z'),
       });
 
-      const result = await service.findById(STUDENT_ID);
+      const result = await service.findById(STUDENT_ID, ADMIN_ACTOR);
 
       expect(result.dateOfBirth).toBeNull();
       expect(result.createdAt).toBe('2026-01-01T00:00:00.000Z');
@@ -702,11 +744,15 @@ describe('StudentService', () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
       repo.createParent.mockResolvedValue({ id: 'new-parent-2' });
 
-      await service.update(STUDENT_ID, {
-        parentName: 'Vu Thi E',
-        parentAddress: '',
-        parentDistrict: 'D',
-      } as never);
+      await service.update(
+        STUDENT_ID,
+        {
+          parentName: 'Vu Thi E',
+          parentAddress: '',
+          parentDistrict: 'D',
+        } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.updateParent).toHaveBeenCalledWith({
         id: 'new-parent-2',
@@ -719,7 +765,11 @@ describe('StudentService', () => {
       repo.createParent.mockResolvedValue({ id: 'new-parent-3' });
       repo.update.mockResolvedValue(undefined);
 
-      const result = await service.update(STUDENT_ID, { parentName: 'Vu Thi E' } as never);
+      const result = await service.update(
+        STUDENT_ID,
+        { parentName: 'Vu Thi E' } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(result).toEqual({ ...linked, parentId: null });
     });
@@ -738,7 +788,7 @@ describe('StudentService', () => {
         updatedAt: new Date('2026-01-02T00:00:00Z'),
       });
 
-      const result = await service.findById(STUDENT_ID);
+      const result = await service.findById(STUDENT_ID, ADMIN_ACTOR);
 
       expect(result.dateOfBirth).toBe('2010-05-01T00:00:00.000Z');
     });
@@ -747,12 +797,16 @@ describe('StudentService', () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
       repo.createParent.mockResolvedValue({ id: 'new-parent-4' });
 
-      await service.update(STUDENT_ID, {
-        parentName: 'Vu Thi E',
-        parentAddress: '1 Street',
-        parentDistrict: '',
-        parentProvince: '',
-      } as never);
+      await service.update(
+        STUDENT_ID,
+        {
+          parentName: 'Vu Thi E',
+          parentAddress: '1 Street',
+          parentDistrict: '',
+          parentProvince: '',
+        } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.updateParent).toHaveBeenCalledWith({
         id: 'new-parent-4',
@@ -763,7 +817,7 @@ describe('StudentService', () => {
     it('clears a linked parent district when an empty string is sent', async () => {
       repo.findById.mockResolvedValue(linked);
 
-      await service.update(STUDENT_ID, { parentDistrict: '' } as never);
+      await service.update(STUDENT_ID, { parentDistrict: '' } as never, ADMIN_ACTOR);
 
       expect(repo.updateParent).toHaveBeenCalledWith({
         id: PARENT_ID,
@@ -775,10 +829,14 @@ describe('StudentService', () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
       repo.createParent.mockResolvedValue({ id: 'new-father' });
 
-      await service.update(STUDENT_ID, {
-        parentName: 'Tran Van F',
-        parentRelationship: 'FATHER',
-      } as never);
+      await service.update(
+        STUDENT_ID,
+        {
+          parentName: 'Tran Van F',
+          parentRelationship: 'FATHER',
+        } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.createParent).toHaveBeenCalledWith(expect.objectContaining({ gender: 'MALE' }));
     });
@@ -787,7 +845,11 @@ describe('StudentService', () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
       repo.createParent.mockResolvedValue({ id: 'new-parent' });
 
-      await service.update(STUDENT_ID, { parentName: 'Vu Thi E', parentDistrict: 'D' } as never);
+      await service.update(
+        STUDENT_ID,
+        { parentName: 'Vu Thi E', parentDistrict: 'D' } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.updateParent).toHaveBeenCalledWith({
         id: 'new-parent',
@@ -796,17 +858,60 @@ describe('StudentService', () => {
     });
   });
 
+  describe('parentId linking', () => {
+    const PARENT_ID = '3f0c9a7e-2b1d-4c5e-8f6a-7b8c9d0e1f2a';
+    const parentRow = { id: PARENT_ID, role: 'PARENT', firstName: 'Tran', lastName: 'Thi B' };
+
+    it('create links the existing parent and creates no new PARENT', async () => {
+      repo.findParentById.mockResolvedValue(parentRow);
+      await service.create({ studentName: 'A B', parentId: PARENT_ID } as never, TUTOR);
+      expect(repo.findParentById).toHaveBeenCalledWith({ id: PARENT_ID });
+      expect(repo.createParent).not.toHaveBeenCalled();
+      expect(repo.createStudent).toHaveBeenCalledWith(
+        expect.objectContaining({ parentId: PARENT_ID }),
+      );
+    });
+
+    it('create throws NotFound when the parentId is not a PARENT', async () => {
+      repo.findParentById.mockResolvedValue(null);
+      await expect(
+        service.create({ studentName: 'A B', parentId: PARENT_ID } as never, TUTOR),
+      ).rejects.toThrow(NotFoundException);
+      expect(repo.createStudent).not.toHaveBeenCalled();
+    });
+
+    it('update re-links the student only and leaves the parent record untouched', async () => {
+      repo.findById.mockResolvedValue({ id: STUDENT_ID, parentId: null, tutorId: TUTOR.id });
+      repo.findParentById.mockResolvedValue(parentRow);
+      repo.update.mockImplementation(async ({ data }) => ({ id: STUDENT_ID, ...data }));
+      const result = await service.update(STUDENT_ID, { parentId: PARENT_ID } as never, ADMIN_ACTOR);
+      expect(repo.update).toHaveBeenCalledWith({ id: STUDENT_ID, data: { parentId: PARENT_ID } });
+      expect(repo.updateParent).not.toHaveBeenCalled();
+      expect(repo.createParent).not.toHaveBeenCalled();
+      expect(result).toEqual(expect.objectContaining({ parentId: PARENT_ID }));
+    });
+
+    it('update throws NotFound before writing when the parentId is not a PARENT', async () => {
+      repo.findById.mockResolvedValue({ id: STUDENT_ID, parentId: null, tutorId: TUTOR.id });
+      repo.findParentById.mockResolvedValue(null);
+      await expect(
+        service.update(STUDENT_ID, { parentId: PARENT_ID } as never, ADMIN_ACTOR),
+      ).rejects.toThrow(NotFoundException);
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('delete', () => {
     it('throws NotFound when the student does not exist and deletes nothing', async () => {
       repo.findById.mockResolvedValue(null);
-      await expect(service.delete(STUDENT_ID)).rejects.toThrow(NotFoundException);
+      await expect(service.delete(STUDENT_ID, ADMIN_ACTOR)).rejects.toThrow(NotFoundException);
       expect(repo.delete).not.toHaveBeenCalled();
     });
 
     it('deletes the student and returns its id', async () => {
       repo.findById.mockResolvedValue({ id: STUDENT_ID });
       repo.delete.mockResolvedValue(true);
-      await expect(service.delete(STUDENT_ID)).resolves.toEqual({ id: STUDENT_ID });
+      await expect(service.delete(STUDENT_ID, ADMIN_ACTOR)).resolves.toEqual({ id: STUDENT_ID });
       expect(repo.delete).toHaveBeenCalledWith({ id: STUDENT_ID });
     });
   });

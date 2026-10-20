@@ -147,6 +147,7 @@ the pattern string across repos, so a mismatch fails at runtime with "no matchin
 | `DATABASE_URL`                | Postgres connection URL         |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Must match `gateway`'s secrets (token issuance happens here) |
 | `JWT_ACCESS_EXPIRES_SECONDS` / `JWT_REFRESH_EXPIRES_SECONDS` | Token TTLs |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_ATTEMPT_WINDOW_SECONDS` | Failed sign-ins per account before lockout (default 5) and the window length in seconds (default 900). Counter lives in `third`'s Redis (`login-fail:<sha256>`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` / `GOOGLE_OAUTH_REDIRECT_URL` | Google OAuth (final token issuance lands here via RPC from `gateway`) |
 | `RABBITMQ_URL`                | RabbitMQ connection URL (local `amqp://admin:admin@localhost:5672`; Railway: RabbitMQ service private URL) |
 | `USER_QUEUE`                  | RMQ RPC listener queue name (default `user_queue`) — this is the queue `gateway`'s `USER_SERVICE` client actually talks to |

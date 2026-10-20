@@ -57,6 +57,7 @@ export class UserRepository {
         ilike(users.username, pattern),
         ilike(users.firstName, pattern),
         ilike(users.lastName, pattern),
+        ilike(users.phone, pattern),
       );
       if (searchCond) conditions.push(searchCond);
     }
@@ -75,6 +76,8 @@ export class UserRepository {
         email: users.email,
         firstName: users.firstName,
         lastName: users.lastName,
+        phone: users.phone,
+        avatar: users.avatar,
         role: users.role,
         isActive: users.isActive,
         createdAt: users.createdAt,
@@ -91,16 +94,7 @@ export class UserRepository {
     return Number(row?.total ?? 0);
   }
 
-  async create(data: {
-    id: string;
-    email: string;
-    username: string;
-    firstName: string;
-    lastName: string;
-    password: string;
-    role: 'ADMIN' | 'TUTOR' | 'PARENT' | 'STUDENT';
-    userCode?: string;
-  }) {
+  async create(data: typeof users.$inferInsert) {
     const [user] = await this.db.insert(users).values(data).returning();
     return user;
   }

@@ -21,6 +21,9 @@ const TUTOR: JwtGuardUser = {
 };
 
 const STUDENT_ID = '33333333-3333-4333-8333-333333333333';
+const TUTOR_ACTOR = { id: TUTOR.id, role: 'TUTOR' };
+const ADMIN: JwtGuardUser = { ...TUTOR, id: '55555555-5555-4555-8555-555555555555', role: 'ADMIN' };
+const ADMIN_ACTOR = { id: ADMIN.id, role: 'ADMIN' };
 
 describe('StudentController', () => {
   let controller: StudentController;
@@ -99,44 +102,46 @@ describe('StudentController', () => {
     it('forwards the validated body and the acting user to create', async () => {
       const dto = { studentName: 'A B' } as never;
       await expect(controller.create(dto, TUTOR)).resolves.toEqual({ id: STUDENT_ID });
-      expect(service.create).toHaveBeenCalledWith(dto, TUTOR);
+      expect(service.create).toHaveBeenCalledWith(dto, TUTOR_ACTOR);
     });
 
     it('forwards list query to findAll and returns its result', async () => {
       const query = { page: 2, limit: 5, search: 'an' } as never;
-      await controller.getAllStudents(query);
-      expect(service.findAll).toHaveBeenCalledWith(query);
+      await controller.getAllStudents(ADMIN, query);
+      expect(service.findAll).toHaveBeenCalledWith(query, ADMIN_ACTOR);
     });
 
     it('forwards the id param to findById', async () => {
-      await controller.findById(STUDENT_ID);
-      expect(service.findById).toHaveBeenCalledWith(STUDENT_ID);
+      await controller.findById(TUTOR, STUDENT_ID);
+      expect(service.findById).toHaveBeenCalledWith(STUDENT_ID, TUTOR_ACTOR);
     });
 
     it('forwards id and dto to update in that order', async () => {
       const dto = { school: 'X' } as never;
-      await controller.update(STUDENT_ID, dto);
-      expect(service.update).toHaveBeenCalledWith(STUDENT_ID, dto);
+      await controller.update(ADMIN, STUDENT_ID, dto);
+      expect(service.update).toHaveBeenCalledWith(STUDENT_ID, dto, ADMIN_ACTOR);
     });
 
     it('forwards the id param to delete', async () => {
-      await controller.delete(STUDENT_ID);
-      expect(service.delete).toHaveBeenCalledWith(STUDENT_ID);
+      await controller.delete(ADMIN, STUDENT_ID);
+      expect(service.delete).toHaveBeenCalledWith(STUDENT_ID, ADMIN_ACTOR);
     });
 
     it('propagates service errors unchanged', async () => {
       service.findById.mockRejectedValueOnce(new Error('boom'));
-      await expect(controller.findById(STUDENT_ID)).rejects.toThrow('boom');
+      await expect(controller.findById(TUTOR, STUDENT_ID)).rejects.toThrow('boom');
     });
   });
 
   describe('access control', () => {
-    it('KNOWN ISSUE: the student controller has no RolesGuard or @Roles, so any signed-in role reaches create/update/delete', () => {
-      // Pinned to current behaviour. Routes are only protected by the global JwtAuthGuard.
-      expect(Reflect.getMetadata(ROLES_KEY, StudentController)).toBeUndefined();
-      expect(Reflect.getMetadata(GUARDS_METADATA, StudentController) ?? []).not.toContain(
-        RolesGuard,
-      );
+    it('is ADMIN or TUTOR at class level and ADMIN-only for list, update and delete', () => {
+      expect(Reflect.getMetadata(ROLES_KEY, StudentController)).toEqual(['ADMIN', 'TUTOR']);
+      expect(Reflect.getMetadata(GUARDS_METADATA, StudentController)).toContain(RolesGuard);
+      expect(Reflect.getMetadata(ROLES_KEY, StudentController.prototype.getAllStudents)).toEqual([
+        'ADMIN',
+      ]);
+      expect(Reflect.getMetadata(ROLES_KEY, StudentController.prototype.update)).toEqual(['ADMIN']);
+      expect(Reflect.getMetadata(ROLES_KEY, StudentController.prototype.delete)).toEqual(['ADMIN']);
     });
   });
 });

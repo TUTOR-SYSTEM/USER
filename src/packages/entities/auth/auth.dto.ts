@@ -6,6 +6,7 @@ import {
   refreshTokenBodySchema,
   registerSchema,
   resetPasswordSchema,
+  verifyEmailSchema,
 } from './auth.schema';
 
 export type RegisterDto = z.infer<typeof registerSchema>;
@@ -14,6 +15,7 @@ export type LoginByUserCodeDto = z.infer<typeof loginByUserCodeSchema>;
 export type RefreshTokenBodyDto = z.infer<typeof refreshTokenBodySchema>;
 export type ForgotPasswordDto = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordDto = z.infer<typeof resetPasswordSchema>;
+export type VerifyEmailDto = z.infer<typeof verifyEmailSchema>;
 export type LoginResponseDto = {
   accessToken: string;
   refreshToken: string;
@@ -40,5 +42,9 @@ export type ForgotPasswordResponseDto = {
 };
 
 export type ResetPasswordResponseDto = {
+  ok: true;
+};
+
+export type VerifyEmailResponseDto = {
   ok: true;
 };

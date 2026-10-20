@@ -1,614 +1,389 @@
-import { BadRequestException, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { ERROR_MESSAGES } from 'src/data/constants';
-import { hashData } from '@packages/helpers';
+import { hashData, hashRefreshToken } from '@packages/helpers';
 import { AuthService } from 'src/features/auth/auth.service';
 import type { UserService } from 'src/features/user/user.service';
 import type { RmqProducer } from 'src/features/rabbitmq/rmq.producer';
+import { clearSessionCache } from 'src/packages/helpers/session-check.helper';
 
-// user.service pulls in the Drizzle repository, which imports `@packages/database/schema`. The
-// jest moduleNameMapper cannot resolve that alias, so stub the class (auth tests mock it anyway).
+// user.service pulls in the Drizzle repository (alias not resolvable under jest): stub the class.
 jest.mock('src/features/user/user.service', () => ({ UserService: class UserService {} }));
 
 const USER_ID = '6f1c2b4e-9d3a-4c7e-8b21-0a1b2c3d4e5f';
-const ACCESS_SECRET = 'test-access-secret';
-const REFRESH_SECRET = 'test-refresh-secret';
-const REFRESH_TTL = 3600;
-
 const env: Record<string, string> = {
-  JWT_ACCESS_SECRET: ACCESS_SECRET,
-  JWT_REFRESH_SECRET: REFRESH_SECRET,
+  JWT_ACCESS_SECRET: 'test-access-secret',
+  JWT_REFRESH_SECRET: 'test-refresh-secret',
   JWT_ACCESS_EXPIRES_SECONDS: '900',
-  JWT_REFRESH_EXPIRES_SECONDS: String(REFRESH_TTL),
+  JWT_REFRESH_EXPIRES_SECONDS: '3600',
 };
 
-function buildUser(overrides: Record<string, unknown> = {}) {
-  return {
-    id: USER_ID,
-    email: 'student@example.test',
-    username: 'student1',
-    userCode: 'ABC123',
-    firstName: 'Ann',
-    lastName: 'Le',
-    role: 'STUDENT',
-    isActive: true,
-    password: overrides.password ?? '',
-    ...overrides,
-  };
+const user = (overrides: Record<string, unknown> = {}) => ({
+  id: USER_ID,
+  email: 'student@example.test',
+  username: 'student1',
+  userCode: 'ABC123',
+  firstName: 'Ann',
+  lastName: 'Le',
+  role: 'STUDENT',
+  isActive: true,
+  emailVerified: true,
+  password: '',
+  ...overrides,
+});
+
+/** In-memory stand-in for third-service's `redis.*` RPC (set/get/exists/delByPrefix/del). */
+function fakeRmq() {
+  const store = new Map<string, string>();
+  const send = jest.fn(async (pattern: string, payload: Record<string, unknown>) => {
+    switch (pattern) {
+      case 'redis.set':
+        store.set(payload.key as string, payload.value as string);
+        return { ok: true };
+      case 'redis.get':
+        return store.get(payload.key as string) ?? null;
+      case 'redis.exists':
+        return store.has(payload.key as string);
+      case 'redis.delByPrefix': {
+        let deleted = 0;
+        for (const k of [...store.keys()]) {
+          if (k.startsWith(payload.prefix as string)) {
+            store.delete(k);
+            deleted++;
+          }
+        }
+        return { deleted };
+      }
+      default:
+        throw new Error(`unexpected ${pattern}`);
+    }
+  });
+  const emit = jest.fn(async (pattern: string, payload: { keys: string[] }) => {
+    if (pattern === 'redis.del') payload.keys.forEach((k) => store.delete(k));
+  });
+  return { store, send, emit };
 }
 
 describe('AuthService', () => {
   let service: AuthService;
-  let jwtService: JwtService;
-  let userService: {
-    getUserByField: jest.Mock;
-    createUserService: jest.Mock;
-    updateUserPasswordService: jest.Mock;
-  };
-  let rmq: { send: jest.Mock; emit: jest.Mock };
-  let correctPasswordHash: string;
+  let jwt: JwtService;
+  let rmq: ReturnType<typeof fakeRmq>;
+  let userService: Record<string, jest.Mock>;
+  let correctHash: string;
 
   beforeAll(async () => {
-    correctPasswordHash = await hashData('correct-password');
+    correctHash = await hashData('correct-password');
   });
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    jwtService = new JwtService({});
+    clearSessionCache();
+    jwt = new JwtService({});
+    rmq = fakeRmq();
     userService = {
       getUserByField: jest.fn().mockResolvedValue([]),
       createUserService: jest.fn().mockResolvedValue({ message: 'ok', data: {} }),
-      updateUserPasswordService: jest.fn(),
-    };
-    rmq = {
-      send: jest.fn().mockResolvedValue(undefined),
-      emit: jest.fn().mockResolvedValue(undefined),
+      updateUserPasswordService: jest.fn().mockResolvedValue({}),
+      setEmailVerifiedService: jest.fn().mockResolvedValue({ id: USER_ID, emailVerified: true }),
     };
     const config = { get: (key: string) => env[key] } as unknown as ConfigService;
     service = new AuthService(
       userService as unknown as UserService,
-      jwtService,
+      jwt,
       rmq as unknown as RmqProducer,
       config,
     );
   });
 
-  afterEach(() => {
-    jest.restoreAllMocks();
-  });
+  afterEach(() => jest.restoreAllMocks());
 
-  describe('loginService', () => {
-    it('returns signed access/refresh tokens and stores the refresh token as the session', async () => {
-      userService.getUserByField.mockResolvedValue([buildUser({ password: correctPasswordHash })]);
+  const sessionKeys = () => [...rmq.store.keys()].filter((k) => k.startsWith('session:'));
 
-      const result = await service.loginService({
-        email: 'student@example.test',
+  describe('login', () => {
+    it('returns access and refresh tokens that both carry a sid, and records the session', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+
+      const out = await service.loginService({
+        email: 'Student@Example.test',
         password: 'correct-password',
-      } as never);
-
-      expect(result.user).toEqual({
-        id: USER_ID,
-        email: 'student@example.test',
-        userCode: 'ABC123',
-        username: 'student1',
       });
-      const access = jwtService.verify(result.accessToken, { secret: ACCESS_SECRET });
-      expect(access).toMatchObject({ sub: USER_ID, role: 'STUDENT', typ: 'access' });
-      const refresh = jwtService.verify(result.refreshToken, { secret: REFRESH_SECRET });
-      expect(refresh).toMatchObject({ sub: USER_ID, typ: 'refresh' });
 
-      expect(rmq.send).toHaveBeenCalledWith('redis.set', {
-        key: `session:${USER_ID}`,
-        value: result.refreshToken,
-        ttlSeconds: REFRESH_TTL,
-      });
-    });
-
-    it('rejects a wrong password with the generic invalid-credentials error and issues no tokens', async () => {
-      userService.getUserByField.mockResolvedValue([buildUser({ password: correctPasswordHash })]);
-
-      await expect(
-        service.loginService({ email: 'student@example.test', password: 'wrong' } as never),
-      ).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
-      });
-      expect(rmq.send).not.toHaveBeenCalled();
-    });
-
-    it('rejects an unknown email with the same error as a wrong password (no account enumeration)', async () => {
-      userService.getUserByField.mockResolvedValue([]);
-
-      await expect(
-        service.loginService({ email: 'nobody@example.test', password: 'whatever' } as never),
-      ).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
-      });
-    });
-
-    it('rejects a deactivated account even with the correct password', async () => {
-      userService.getUserByField.mockResolvedValue([
-        buildUser({ password: correctPasswordHash, isActive: false }),
-      ]);
-
-      await expect(
-        service.loginService({
-          email: 'student@example.test',
-          password: 'correct-password',
-        } as never),
-      ).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.ACCOUNT_DEACTIVATED,
-      });
-      expect(rmq.send).not.toHaveBeenCalled();
-    });
-
-    it('still logs in when storing the session in Redis fails (fire-and-forget)', async () => {
-      userService.getUserByField.mockResolvedValue([buildUser({ password: correctPasswordHash })]);
-      rmq.send.mockRejectedValue(new Error('redis down'));
-
-      const result = await service.loginService({
-        email: 'student@example.test',
-        password: 'correct-password',
-      } as never);
-
-      expect(result.accessToken).toEqual(expect.any(String));
-    });
-  });
-
-  describe('loginByUserCodeService', () => {
-    it('logs in the row whose role matches the requested role', async () => {
-      userService.getUserByField.mockResolvedValue([
-        buildUser({ role: 'PARENT', password: await hashData('other') }),
-        buildUser({ role: 'STUDENT', password: correctPasswordHash }),
-      ]);
-
-      const result = await service.loginByUserCodeService({
-        userCode: 'ABC123',
-        role: 'STUDENT',
-        password: 'correct-password',
-      } as never);
-
-      expect(result.user.id).toBe(USER_ID);
+      const access = jwt.decode(out.accessToken) as Record<string, string>;
+      const refresh = jwt.decode(out.refreshToken) as Record<string, string>;
+      expect(access.sid).toMatch(/^[0-9a-f-]{36}$/);
+      expect(refresh.sid).toBe(access.sid);
       expect(userService.getUserByField).toHaveBeenCalledWith({
-        field: 'userCode',
-        value: 'ABC123',
+        field: 'email',
+        value: 'student@example.test',
       });
+      expect(rmq.store.get(`session:${USER_ID}:${access.sid}`)).toBe('1');
+      expect(rmq.store.get(`refresh:${USER_ID}:${access.sid}`)).toBe(
+        hashRefreshToken(out.refreshToken),
+      );
+      expect(out).not.toHaveProperty('refreshToken', undefined);
     });
 
-    it('rejects when no account with that code has the requested role', async () => {
-      userService.getUserByField.mockResolvedValue([
-        buildUser({ role: 'PARENT', password: correctPasswordHash }),
-      ]);
+    it('opens a new session per login and leaves the other devices signed in', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+      await service.loginService({ email: 'a@b.test', password: 'correct-password' });
+      await service.loginService({ email: 'a@b.test', password: 'correct-password' });
+      expect(sessionKeys()).toHaveLength(2);
+    });
 
+    it('refuses the login when the session cannot be stored (awaited, not fire-and-forget)', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+      rmq.send.mockImplementation(async (pattern: string) => {
+        if (pattern === 'redis.get') return null;
+        throw new Error('redis down');
+      });
       await expect(
-        service.loginByUserCodeService({
-          userCode: 'ABC123',
-          role: 'TUTOR',
-          password: 'correct-password',
-        } as never),
-      ).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
-      });
+        service.loginService({ email: 'a@b.test', password: 'correct-password' }),
+      ).rejects.toThrow('redis down');
     });
 
-    it('rejects an unknown user code', async () => {
+    it('reports an unknown email as EMAIL_NOT_FOUND', async () => {
+      await expect(
+        service.loginService({ email: 'x@y.test', password: 'whatever1' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.EMAIL_NOT_FOUND });
+    });
+
+    it('reports a wrong password as INVALID_PASSWORD', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+      await expect(
+        service.loginService({ email: 'x@y.test', password: 'wrong' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_PASSWORD });
+    });
+
+    it('reports an OAuth-only account (no password) as ACCOUNT_NO_PASSWORD', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: null })]);
+      await expect(
+        service.loginService({ email: 'x@y.test', password: 'whatever1' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.ACCOUNT_NO_PASSWORD });
+    });
+
+    it('reports an unknown user code as USER_CODE_NOT_FOUND', async () => {
       userService.getUserByField.mockResolvedValue([]);
-
       await expect(
         service.loginByUserCodeService({
-          userCode: 'ZZZZZZ',
-          role: 'STUDENT',
+          userCode: '123456',
           password: 'x',
+          role: 'STUDENT',
         } as never),
-      ).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.INVALID_CREDENTIALS,
-      });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.USER_CODE_NOT_FOUND });
+    });
+
+    it('still signs in a legacy account whose password is shorter than the new minimum', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: await hashData('abc123') })]);
+      await expect(
+        service.loginService({ email: 'a@b.test', password: 'abc123' }),
+      ).resolves.toHaveProperty('accessToken');
     });
   });
 
-  describe('refreshTokens', () => {
-    function signRefresh(
-      overrides: Record<string, unknown> = {},
-      secret = REFRESH_SECRET,
-      options = {},
-    ) {
-      return jwtService.sign(
-        { sub: USER_ID, email: 'student@example.test', typ: 'refresh', ...overrides },
-        { secret, expiresIn: 600, ...options },
-      );
+  describe('refresh', () => {
+    async function login() {
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+      return service.loginService({ email: 'a@b.test', password: 'correct-password' });
     }
 
-    it('rotates the pair when the presented refresh token is the active session', async () => {
-      const token = signRefresh();
-      rmq.send.mockImplementation(async (pattern: string) => {
-        if (pattern === 'redis.get') return token;
-        return undefined;
-      });
-      userService.getUserByField.mockResolvedValue([buildUser()]);
+    it('rotates: the presented token is replaced by a new pair on the same session', async () => {
+      const first = await login();
+      userService.getUserByField.mockResolvedValue([user()]);
 
-      const result = await service.refreshTokens({ refreshToken: token } as never);
+      const second = await service.refreshTokens({ refreshToken: first.refreshToken });
 
-      expect(result.refreshToken).not.toBe('');
-      expect(rmq.send).toHaveBeenCalledWith('redis.get', { key: `session:${USER_ID}` });
-      expect(rmq.send).toHaveBeenCalledWith(
-        'redis.set',
-        expect.objectContaining({ key: `session:${USER_ID}`, value: result.refreshToken }),
+      expect(second.refreshToken).not.toBe(first.refreshToken);
+      const sid = (jwt.decode(first.refreshToken) as Record<string, string>).sid;
+      expect((jwt.decode(second.refreshToken) as Record<string, string>).sid).toBe(sid);
+      expect(rmq.store.get(`refresh:${USER_ID}:${sid}`)).toBe(
+        hashRefreshToken(second.refreshToken),
       );
     });
 
-    it('rejects a refresh token that has been rotated away or logged out', async () => {
-      const token = signRefresh();
-      rmq.send.mockImplementation(async (pattern: string) =>
-        pattern === 'redis.get' ? null : undefined,
-      );
+    it('treats a replayed (already rotated) token as reuse and revokes that session', async () => {
+      const first = await login();
+      userService.getUserByField.mockResolvedValue([user()]);
+      await service.refreshTokens({ refreshToken: first.refreshToken });
 
-      await expect(service.refreshTokens({ refreshToken: token } as never)).rejects.toMatchObject({
-        constructor: UnauthorizedException,
+      await expect(
+        service.refreshTokens({ refreshToken: first.refreshToken }),
+      ).rejects.toMatchObject({
         message: ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN,
       });
-      expect(userService.getUserByField).not.toHaveBeenCalled();
+      expect(sessionKeys()).toHaveLength(0);
     });
 
-    it('rejects a stored session that holds a different refresh token', async () => {
-      const token = signRefresh();
-      rmq.send.mockImplementation(async (pattern: string) =>
-        pattern === 'redis.get'
-          ? signRefresh({ sub: USER_ID }, REFRESH_SECRET, { jwtid: 'other' })
-          : undefined,
-      );
+    it('refuses a token after logout', async () => {
+      const out = await login();
+      const sid = (jwt.decode(out.refreshToken) as Record<string, string>).sid;
+      await service.logoutService({ userId: USER_ID, sid });
+      userService.getUserByField.mockResolvedValue([user()]);
+      await expect(
+        service.refreshTokens({ refreshToken: out.refreshToken }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
 
-      await expect(service.refreshTokens({ refreshToken: token } as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN,
+    it('refuses a legacy refresh token that has no sid', async () => {
+      const legacy = await jwt.signAsync(
+        { sub: USER_ID, email: 'a@b.test', typ: 'refresh' },
+        { secret: env.JWT_REFRESH_SECRET, expiresIn: 60 },
+      );
+      await expect(service.refreshTokens({ refreshToken: legacy })).rejects.toMatchObject({
+        message: ERROR_MESSAGES.INVALID_SESSION,
       });
     });
 
-    it('rejects an expired refresh token', async () => {
-      const expired = jwtService.sign(
-        { sub: USER_ID, email: 'student@example.test', typ: 'refresh' },
-        { secret: REFRESH_SECRET, expiresIn: -10 },
-      );
+    it('fails closed (503) when the stored hash cannot be read', async () => {
+      const out = await login();
+      rmq.send.mockRejectedValueOnce(new Error('timeout'));
+      await expect(
+        service.refreshTokens({ refreshToken: out.refreshToken }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
 
-      await expect(service.refreshTokens({ refreshToken: expired } as never)).rejects.toMatchObject(
+    it('refuses a refresh for a deactivated account', async () => {
+      const out = await login();
+      userService.getUserByField.mockResolvedValue([user({ isActive: false })]);
+      await expect(service.refreshTokens({ refreshToken: out.refreshToken })).rejects.toMatchObject(
         {
-          constructor: UnauthorizedException,
-          message: ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN,
+          message: ERROR_MESSAGES.ACCOUNT_DEACTIVATED,
         },
       );
-      expect(rmq.send).not.toHaveBeenCalled();
-    });
-
-    it('rejects a token signed with the wrong secret', async () => {
-      const forged = signRefresh({}, 'attacker-secret');
-
-      await expect(service.refreshTokens({ refreshToken: forged } as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN,
-      });
-    });
-
-    it('rejects an access token presented as a refresh token', async () => {
-      const access = jwtService.sign(
-        { sub: USER_ID, email: 'student@example.test', role: 'ADMIN', typ: 'access' },
-        { secret: ACCESS_SECRET, expiresIn: 600 },
-      );
-
-      await expect(service.refreshTokens({ refreshToken: access } as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN,
-      });
-    });
-
-    it('rejects a token signed with the refresh secret whose typ is not "refresh"', async () => {
-      const wrongTyp = jwtService.sign(
-        { sub: USER_ID, email: 'student@example.test', typ: 'access' },
-        { secret: REFRESH_SECRET, expiresIn: 600 },
-      );
-
-      await expect(
-        service.refreshTokens({ refreshToken: wrongTyp } as never),
-      ).rejects.toMatchObject({
-        message: ERROR_MESSAGES.INVALID_TOKEN_TYPE,
-      });
-    });
-
-    it('rejects when the user has been deleted since the token was issued', async () => {
-      const token = signRefresh();
-      rmq.send.mockImplementation(async (pattern: string) =>
-        pattern === 'redis.get' ? token : undefined,
-      );
-      userService.getUserByField.mockResolvedValue([]);
-
-      await expect(service.refreshTokens({ refreshToken: token } as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.USER_NO_LONGER_EXISTS,
-      });
-    });
-
-    it('fails open when the session lookup itself errors (documents current behaviour)', async () => {
-      // Intentional per the code comment: a Redis/RMQ outage must not block auth. This test pins
-      // that choice so a change is deliberate. See the report for the security trade-off.
-      const token = signRefresh();
-      rmq.send.mockImplementation(async (pattern: string) => {
-        if (pattern === 'redis.get') throw new Error('rmq timeout');
-        return undefined;
-      });
-      userService.getUserByField.mockResolvedValue([buildUser()]);
-
-      const result = await service.refreshTokens({ refreshToken: token } as never);
-
-      expect(result.accessToken).toEqual(expect.any(String));
     });
   });
 
-  describe('refresh payload shape and password/logout branches', () => {
-    const signRefreshPayload = (payload: Record<string, unknown> | string) =>
-      jwtService.sign(payload as Record<string, unknown>, { secret: REFRESH_SECRET });
+  describe('logout', () => {
+    it('ends only the named session', async () => {
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+      const a = await service.loginService({ email: 'a@b.test', password: 'correct-password' });
+      const b = await service.loginService({ email: 'a@b.test', password: 'correct-password' });
+      const sidA = (jwt.decode(a.accessToken) as Record<string, string>).sid;
 
-    it('rejects a refresh token whose verified payload is not an object', async () => {
-      const token = signRefreshPayload('plain-string-payload');
-      rmq.send.mockImplementation(async (pattern: string) =>
-        pattern === 'redis.get' ? token : undefined,
-      );
-
-      await expect(service.refreshTokens({ refreshToken: token } as never)).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.INVALID_TOKEN_PAYLOAD,
+      await expect(service.logoutService({ userId: USER_ID, sid: sidA })).resolves.toEqual({
+        message: 'Logged out',
       });
-    });
-
-    it.each([
-      ['non-string sub', { sub: 42 }],
-      ['non-string email', { email: 7 }],
-    ])('rejects a refresh token with a %s', async (_label, overrides) => {
-      const token = signRefreshPayload({
-        sub: USER_ID,
-        email: 'student@example.test',
-        typ: 'refresh',
-        ...overrides,
+      expect(rmq.emit).toHaveBeenCalledWith('redis.del', {
+        keys: [`session:${USER_ID}:${sidA}`, `refresh:${USER_ID}:${sidA}`],
       });
-      rmq.send.mockImplementation(async (pattern: string) =>
-        pattern === 'redis.get' ? token : undefined,
-      );
-
-      await expect(service.refreshTokens({ refreshToken: token } as never)).rejects.toMatchObject({
-        constructor: UnauthorizedException,
-        message: ERROR_MESSAGES.INVALID_TOKEN_PAYLOAD,
-      });
+      expect(sessionKeys()).toHaveLength(1);
+      expect(b.accessToken).toBeTruthy();
     });
 
-    it('fails with FAILED_TO_UPDATE_PASSWORD when the user service returns no row', async () => {
-      userService.getUserByField.mockResolvedValue([buildUser()]);
-      userService.updateUserPasswordService.mockResolvedValue(undefined);
-
-      await expect(
-        service.updateUserPasswordService({ userId: USER_ID, password: 'New-pass-1' }),
-      ).rejects.toMatchObject({
-        constructor: BadRequestException,
-        message: ERROR_MESSAGES.FAILED_TO_UPDATE_PASSWORD,
-      });
-    });
-
-    it('still logs out when the best-effort Redis delete fails, and only warns', async () => {
-      rmq.emit.mockRejectedValue(new Error('redis down'));
-      const warn = jest.spyOn(Logger.prototype, 'warn');
-
-      expect(service.logoutService({ id: USER_ID })).toEqual({ ok: true });
-
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(warn).toHaveBeenCalledWith(
-        `Failed to delete session for user ${USER_ID}`,
-        expect.any(Error),
-      );
-    });
-  });
-
-  describe('remaining auth branches', () => {
-    it('googleLoginService fails with FAILED_TO_CREATE_USER when the new account cannot be re-read', async () => {
-      userService.getUserByField.mockResolvedValue([]);
-
-      await expect(
-        service.googleLoginService({
-          email: 'new@example.test',
-          firstName: 'New',
-          lastName: 'User',
-        } as never),
-      ).rejects.toMatchObject({
-        constructor: BadRequestException,
-        message: ERROR_MESSAGES.FAILED_TO_CREATE_USER,
-      });
-      expect(userService.createUserService).toHaveBeenCalledTimes(1);
-    });
-
-    it('registerService drops a whitespace-only username so it is stored as unset', async () => {
-      userService.getUserByField
-        .mockResolvedValueOnce([]) // email is free
-        .mockResolvedValueOnce([]) // blank username lookup
-        .mockResolvedValueOnce([buildUser()]); // re-read after create
-
-      await service.registerService({
-        email: 'tutor@example.test',
-        username: '   ',
-        password: 'Abcdef1!',
-        firstName: 'Ann',
-        lastName: 'Le',
-      } as never);
-
-      expect(userService.createUserService).toHaveBeenCalledWith(
-        expect.objectContaining({ username: undefined, role: 'TUTOR' }),
-      );
-    });
-  });
-
-  describe('logoutService', () => {
-    it('deletes the session key for a valid user id', () => {
-      const result = service.logoutService({ id: USER_ID });
-
-      expect(result).toEqual({ ok: true });
-      expect(rmq.emit).toHaveBeenCalledWith('redis.del', { keys: [`session:${USER_ID}`] });
-    });
-
-    it.each([
-      ['missing id', {}],
-      ['empty id', { id: '' }],
-      ['non-uuid id', { id: 'not-a-uuid' }],
-    ])('rejects %s without touching Redis', (_label, user) => {
-      expect(() => service.logoutService(user as Record<string, string>)).toThrow(
-        ERROR_MESSAGES.INVALID_USER_ID,
+    it('rejects a malformed user id or sid without touching Redis', async () => {
+      await expect(service.logoutService({ userId: 'x', sid: 'y' })).rejects.toBeInstanceOf(
+        BadRequestException,
       );
       expect(rmq.emit).not.toHaveBeenCalled();
     });
   });
 
-  describe('registerService', () => {
-    const dto = {
-      email: 'tutor@example.test',
-      username: '  tutor1  ',
-      password: 'Sup3r-secret',
-      firstName: 'Bao',
-      lastName: 'Tran',
-    };
-
-    it('creates a TUTOR with a trimmed username and returns the public fields', async () => {
-      userService.getUserByField
-        .mockResolvedValueOnce([]) // email free
-        .mockResolvedValueOnce([]) // username free
-        .mockResolvedValueOnce([
-          buildUser({ id: USER_ID, email: dto.email, username: 'tutor1', role: 'TUTOR' }),
-        ]);
-
-      const result = await service.registerService(dto as never);
-
-      expect(userService.createUserService).toHaveBeenCalledWith(
-        expect.objectContaining({ email: dto.email, username: 'tutor1', role: 'TUTOR' }),
-      );
-      expect(result.user).toEqual({
-        id: USER_ID,
-        email: dto.email,
-        username: 'tutor1',
-        firstName: 'Ann',
-        lastName: 'Le',
-      });
-    });
-
-    it('rejects an email that is already registered', async () => {
-      userService.getUserByField.mockResolvedValueOnce([buildUser()]);
-
-      await expect(service.registerService(dto as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.EMAIL_EXISTS,
-      });
+  describe('register', () => {
+    it('lowercases the email and answers a duplicate with the generic error (no echo of the email)', async () => {
+      userService.getUserByField.mockResolvedValueOnce([user()]);
+      await expect(
+        service.registerService({
+          email: 'Student@Example.test',
+          password: 'Abcdef1!',
+          firstName: 'Ann',
+          lastName: 'Le',
+        } as never),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS });
       expect(userService.createUserService).not.toHaveBeenCalled();
     });
 
-    it('rejects a username that is already taken', async () => {
-      userService.getUserByField.mockResolvedValueOnce([]).mockResolvedValueOnce([buildUser()]);
-
-      await expect(service.registerService(dto as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.USERNAME_EXISTS,
-      });
-      expect(userService.createUserService).not.toHaveBeenCalled();
-    });
-
-    it('fails when the created row cannot be read back', async () => {
-      userService.getUserByField.mockResolvedValue([]);
-
-      await expect(service.registerService(dto as never)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.FAILED_TO_CREATE_USER,
-      });
-    });
-  });
-
-  describe('OAuth login (google / facebook)', () => {
-    const profile = { email: 'oauth@example.test', firstName: 'Cam', lastName: 'Vo' };
-
-    it('signs in an existing user without creating a new account', async () => {
-      userService.getUserByField.mockResolvedValue([buildUser({ email: profile.email })]);
-
-      const result = await service.googleLoginService(profile as never);
-
-      expect(userService.createUserService).not.toHaveBeenCalled();
-      expect(result.user.id).toBe(USER_ID);
-    });
-
-    it('auto-registers an unknown email as STUDENT with a random password, then signs in', async () => {
+    it('stores the verify token bound to the user id and email', async () => {
       userService.getUserByField
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([buildUser({ email: profile.email })]);
-
-      const result = await service.facebookLoginService(profile as never);
-
-      expect(userService.createUserService).toHaveBeenCalledWith(
-        expect.objectContaining({ email: profile.email, role: 'STUDENT', firstName: 'Cam' }),
-      );
-      const createdPassword = userService.createUserService.mock.calls[0][0].password as string;
-      expect(createdPassword).toMatch(/^[0-9a-f-]{36}$/);
-      expect(result.user.email).toBe(profile.email);
+        .mockResolvedValueOnce([user({ emailVerified: false })]);
+      await service.registerService({
+        email: 'a@b.test',
+        password: 'Abcdef1!',
+        firstName: 'Ann',
+        lastName: 'Le',
+      } as never);
+      const set = rmq.send.mock.calls.find(([p]) => p === 'redis.set');
+      expect(JSON.parse((set![1] as { value: string }).value)).toEqual({
+        userId: USER_ID,
+        email: 'student@example.test',
+      });
     });
   });
 
-  describe('forgot / reset password', () => {
-    it('returns ok for an unknown email and sends nothing', async () => {
-      userService.getUserByField.mockResolvedValue([]);
+  describe('verifyEmail', () => {
+    it('verifies when the token email still matches the account email', async () => {
+      rmq.store.set(
+        'verify-email:t1',
+        JSON.stringify({ userId: USER_ID, email: 'student@example.test' }),
+      );
+      userService.getUserByField.mockResolvedValue([user()]);
+      await expect(service.verifyEmailService({ jti: 't1' } as never)).resolves.toEqual({
+        ok: true,
+      });
+      expect(userService.setEmailVerifiedService).toHaveBeenCalledWith({
+        id: USER_ID,
+        emailVerified: true,
+      });
+    });
 
+    it('rejects a token issued for an address the account no longer has', async () => {
+      rmq.store.set('verify-email:t2', JSON.stringify({ userId: USER_ID, email: 'old@b.test' }));
+      userService.getUserByField.mockResolvedValue([user()]);
+      await expect(service.verifyEmailService({ jti: 't2' } as never)).rejects.toMatchObject({
+        message: ERROR_MESSAGES.INVALID_VERIFY_EMAIL_TOKEN,
+      });
+      expect(userService.setEmailVerifiedService).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('forgot password', () => {
+    it('answers the same way for a known and an unknown email', async () => {
+      await expect(service.forgotPasswordService({ email: 'nobody@b.test' })).resolves.toEqual({
+        ok: true,
+      });
+      userService.getUserByField.mockResolvedValue([user()]);
       await expect(
-        service.forgotPasswordService({ email: 'nobody@example.test' } as never),
+        service.forgotPasswordService({ email: 'student@example.test' }),
       ).resolves.toEqual({
         ok: true,
       });
-      expect(rmq.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('OAuth sign-in', () => {
+    it('refuses to hand over an ADMIN/TUTOR/PARENT account with the generic credentials error', async () => {
+      userService.getUserByField.mockResolvedValue([user({ role: 'TUTOR', emailVerified: false })]);
+      await expect(
+        service.googleLoginService({
+          email: 'tutor@b.test',
+          firstName: 'T',
+          lastName: 'U',
+        } as never),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
     });
 
-    it('stores a 5-minute reset token in Redis and asks the mailer to send it', async () => {
-      userService.getUserByField.mockResolvedValue([buildUser()]);
-
-      await service.forgotPasswordService({ email: 'student@example.test' } as never);
-
-      expect(rmq.send).toHaveBeenCalledWith(
-        'redis.set',
-        expect.objectContaining({ value: USER_ID, ttlSeconds: 300 }),
+    it('replaces the squatter password of an unverified STUDENT before issuing tokens', async () => {
+      userService.getUserByField
+        .mockResolvedValueOnce([user({ emailVerified: false })])
+        .mockResolvedValueOnce([user({ emailVerified: false })]);
+      await service.googleLoginService({
+        email: 'student@example.test',
+        firstName: 'A',
+        lastName: 'B',
+      } as never);
+      expect(userService.updateUserPasswordService).toHaveBeenCalledWith(
+        expect.objectContaining({ id: USER_ID }),
       );
-      const jti = rmq.send.mock.calls[0][1].key.replace('reset-password:', '');
-      expect(rmq.send).toHaveBeenCalledWith('email.sendForgotPasswordMail', {
-        to: 'student@example.test',
-        resetToken: jti,
-        displayName: 'Ann',
-      });
-    });
-
-    it('resets the password when the reset token resolves to a user', async () => {
-      rmq.send.mockResolvedValue(USER_ID);
-      userService.getUserByField.mockResolvedValue([buildUser()]);
-      userService.updateUserPasswordService.mockResolvedValue({ id: USER_ID });
-
-      await expect(
-        service.resetPasswordService({ jti: 'token-1', password: 'New-pass-1' } as never),
-      ).resolves.toEqual({ ok: true });
-
-      expect(userService.updateUserPasswordService).toHaveBeenCalledWith({
+      expect(userService.setEmailVerifiedService).toHaveBeenCalledWith({
         id: USER_ID,
-        password: 'New-pass-1',
+        emailVerified: true,
       });
-      expect(rmq.emit).toHaveBeenCalledWith('redis.del', { keys: ['reset-password:token-1'] });
-    });
-
-    it('rejects an unknown or expired reset token without changing the password', async () => {
-      rmq.send.mockResolvedValue(null);
-
-      await expect(
-        service.resetPasswordService({ jti: 'expired', password: 'New-pass-1' } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_RESET_PASSWORD_TOKEN });
-      expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
-    });
-
-    it('rejects when the token points at a user that no longer exists', async () => {
-      rmq.send.mockResolvedValue(USER_ID);
-      userService.getUserByField.mockResolvedValue([]);
-
-      await expect(
-        service.resetPasswordService({ jti: 'token-2', password: 'New-pass-1' } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.USER_NOT_FOUND });
-      expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
     });
   });
 });

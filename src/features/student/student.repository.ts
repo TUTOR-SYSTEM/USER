@@ -78,6 +78,16 @@ export class StudentRepository {
     return student ?? null;
   }
 
+  /** Existing PARENT user to link to a student; null when no PARENT has that id. */
+  async findParentById({ id }: { id: string }) {
+    const [row] = await this.db
+      .select()
+      .from(users)
+      .where(and(eq(users.id, id), eq(users.role, 'PARENT')))
+      .limit(1);
+    return row ?? null;
+  }
+
   async updateParent({ id, data }: { id: string; data: Partial<typeof users.$inferInsert> }) {
     const [parent] = await this.db
       .update(users)

@@ -32,6 +32,7 @@ import {
   type UpdateStudentDto,
 } from '@packages/entities/student';
 import type { JwtGuardUser } from '../../packages/guards/jwt-auth.guard';
+import { actorFrom } from '../user/user.service';
 import { StudentService } from './student.service';
 
 /**
@@ -97,6 +98,11 @@ export class StudentController {
           type: 'string',
           example: 'ABC High School',
         },
+        parentId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Link an existing PARENT instead of creating one from parentName',
+        },
         parentName: {
           type: 'string',
           example: 'Nguyen Van B',
@@ -124,7 +130,7 @@ export class StudentController {
     dto: CreateStudentDto,
     @CurrentUser() currentUser: JwtGuardUser,
   ) {
-    return this.studentService.create(dto, currentUser);
+    return this.studentService.create(dto, actorFrom(currentUser));
   }
 
   @Get()
@@ -155,10 +161,11 @@ export class StudentController {
   })
   @SwaggerResponse({ status: 200, description: 'Students fetched' })
   async getAllStudents(
+    @CurrentUser() user: JwtGuardUser,
     @Query(new ZodValidationPipe<GetStudentsQueryDto>(getStudentsQuerySchema))
     query: GetStudentsQueryDto,
   ) {
-    return this.studentService.findAll(query);
+    return this.studentService.findAll(query, actorFrom(user));
   }
 
   @Get(':id')
@@ -226,8 +233,8 @@ export class StudentController {
     },
   })
   @SwaggerResponse({ status: 404, description: 'Student not found' })
-  async findById(@Param('id') id: string) {
-    return this.studentService.findById(id);
+  async findById(@CurrentUser() user: JwtGuardUser, @Param('id') id: string) {
+    return this.studentService.findById(id, actorFrom(user));
   }
 
   @Put(':id')
@@ -251,6 +258,7 @@ export class StudentController {
         address: { type: 'string', maxLength: 500, example: '123 Nguyen Trai' },
         district: { type: 'string', maxLength: 30, example: 'Thanh Xuan' },
         province: { type: 'string', maxLength: 30, example: 'Ha Noi' },
+        parentId: { type: 'string', format: 'uuid', nullable: true },
         parentName: { type: 'string', maxLength: 255, example: 'Tran Thi B' },
         parentPhone: { type: 'string', example: '0987654321' },
         parentEmail: { type: 'string', format: 'email', example: 'phuhuynh@gmail.com' },
@@ -268,11 +276,12 @@ export class StudentController {
   })
   @SwaggerResponse({ status: 200, description: 'Student updated' })
   async update(
+    @CurrentUser() user: JwtGuardUser,
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateStudentSchema))
     dto: UpdateStudentDto,
   ) {
-    return this.studentService.update(id, dto);
+    return this.studentService.update(id, dto, actorFrom(user));
   }
 
   @Delete(':id')
@@ -281,7 +290,7 @@ export class StudentController {
   @ApiOperation({ summary: 'Delete student' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
   @SwaggerResponse({ status: 200, description: 'Student deleted' })
-  async delete(@Param('id') id: string) {
-    return this.studentService.delete(id);
+  async delete(@CurrentUser() user: JwtGuardUser, @Param('id') id: string) {
+    return this.studentService.delete(id, actorFrom(user));
   }
 }

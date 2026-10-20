@@ -31,15 +31,20 @@ describe('getJwtTokensConfig', () => {
     });
   });
 
-  it('falls back to JWT_SECRET, then to the refresh secret reusing the access secret', () => {
-    const cfg = getJwtTokensConfig(configOf({ JWT_SECRET: 'legacy' }));
-    expect(cfg.accessSecret).toBe('legacy');
-    expect(cfg.refreshSecret).toBe('legacy');
+  it('refuses to start without both secrets: no fallback to a guessable default', () => {
+    expect(() => getJwtTokensConfig(configOf({}))).toThrow(
+      'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be set',
+    );
+    expect(() => getJwtTokensConfig(configOf({ JWT_ACCESS_SECRET: 'a' }))).toThrow();
+    expect(() => getJwtTokensConfig(configOf({ JWT_SECRET: 'legacy' }))).toThrow();
+    expect(() =>
+      getJwtTokensConfig(configOf({ JWT_ACCESS_SECRET: 'a', JWT_REFRESH_SECRET: '  ' })),
+    ).toThrow();
   });
 
   it('uses the documented TTL defaults when the env vars are unset or empty', () => {
     const cfg = getJwtTokensConfig(
-      configOf({ JWT_ACCESS_SECRET: 'a', JWT_ACCESS_EXPIRES_SECONDS: '' }),
+      configOf({ JWT_ACCESS_SECRET: 'a', JWT_REFRESH_SECRET: 'r', JWT_ACCESS_EXPIRES_SECONDS: '' }),
     );
     expect(cfg.accessExpiresIn).toBe(DEFAULT_JWT_ACCESS_EXPIRES_SECONDS);
     expect(cfg.refreshExpiresIn).toBe(DEFAULT_JWT_REFRESH_EXPIRES_SECONDS);
@@ -47,15 +52,13 @@ describe('getJwtTokensConfig', () => {
 
   it.each(['0', '-5', 'abc'])('ignores a non-positive or non-numeric TTL (%s)', (raw) => {
     const cfg = getJwtTokensConfig(
-      configOf({ JWT_ACCESS_SECRET: 'a', JWT_ACCESS_EXPIRES_SECONDS: raw }),
+      configOf({
+        JWT_ACCESS_SECRET: 'a',
+        JWT_REFRESH_SECRET: 'r',
+        JWT_ACCESS_EXPIRES_SECONDS: raw,
+      }),
     );
     expect(cfg.accessExpiresIn).toBe(DEFAULT_JWT_ACCESS_EXPIRES_SECONDS);
-  });
-
-  it('falls back to a built-in dev secret when none is configured (documents current behaviour)', () => {
-    // Note for reviewers: an unset secret silently signs with a public constant. Pinned here so
-    // the fallback is a deliberate change if it is ever removed.
-    expect(getJwtTokensConfig(configOf({})).accessSecret).toBe('dev-insecure-jwt-secret');
   });
 });
 
@@ -63,15 +66,16 @@ describe('getJwtModuleOptionsFromConfig', () => {
   it('maps the access secret and TTL into the Nest JwtModule options shape', () => {
     expect(
       getJwtModuleOptionsFromConfig(
-        configOf({ JWT_ACCESS_SECRET: 'a', JWT_ACCESS_EXPIRES_SECONDS: '90' }),
+        configOf({
+          JWT_ACCESS_SECRET: 'a',
+          JWT_REFRESH_SECRET: 'r',
+          JWT_ACCESS_EXPIRES_SECONDS: '90',
+        }),
       ),
     ).toEqual({ secret: 'a', signOptions: { expiresIn: 90 } });
   });
 
-  it('uses the defaults when no config is present', () => {
-    expect(getJwtModuleOptionsFromConfig(configOf({}))).toEqual({
-      secret: 'dev-insecure-jwt-secret',
-      signOptions: { expiresIn: DEFAULT_JWT_ACCESS_EXPIRES_SECONDS },
-    });
+  it('throws when no secret is configured', () => {
+    expect(() => getJwtModuleOptionsFromConfig(configOf({}))).toThrow();
   });
 });

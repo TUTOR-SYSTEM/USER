@@ -2,7 +2,6 @@ import {
   changePasswordSchema,
   createUserSchema,
   dataFieldSchema,
-  getUserDetailQuerySchema,
   getUsersQuerySchema,
   updateGradeSchema,
   updateUserGradesSchema,
@@ -15,34 +14,6 @@ const messagesOf = (result: { success: boolean; error?: { issues: { message: str
   result.success ? [] : result.error!.issues.map((i) => i.message);
 
 describe('user schemas', () => {
-  describe('getUserDetailQuerySchema', () => {
-    it('defaults to no includes and 50 transactions', () => {
-      expect(getUserDetailQuerySchema.parse({})).toEqual({ include: [], transactionLimit: 50 });
-    });
-
-    it('parses a comma list, trimming and lower-casing, dropping unknown values', () => {
-      expect(
-        getUserDetailQuerySchema.parse({ include: ' Wallets, transactions ,bogus' }).include,
-      ).toEqual(['wallets', 'transactions']);
-    });
-
-    it('accepts an array include', () => {
-      expect(getUserDetailQuerySchema.parse({ include: ['categories'] }).include).toEqual([
-        'categories',
-      ]);
-    });
-
-    it('coerces transactionLimit and enforces 1..200', () => {
-      expect(getUserDetailQuerySchema.parse({ transactionLimit: '10' }).transactionLimit).toBe(10);
-      expect(getUserDetailQuerySchema.safeParse({ transactionLimit: 0 }).success).toBe(false);
-      expect(getUserDetailQuerySchema.safeParse({ transactionLimit: 201 }).success).toBe(false);
-    });
-
-    it('rejects a non-object input, since the inner object schema requires one', () => {
-      expect(getUserDetailQuerySchema.safeParse(undefined).success).toBe(false);
-    });
-  });
-
   describe('getUsersQuerySchema', () => {
     it('applies page=1 and limit=10 defaults', () => {
       expect(getUsersQuerySchema.parse({})).toEqual({ page: 1, limit: 10 });
@@ -79,32 +50,27 @@ describe('user schemas', () => {
   });
 
   describe('changePasswordSchema', () => {
-    const valid = (newPassword: string) =>
-      changePasswordSchema.safeParse({ currentPassword: 'old', newPassword });
+    const valid = (newPassword: string, currentPassword = 'old') =>
+      changePasswordSchema.safeParse({ currentPassword, newPassword });
 
     it('accepts a password meeting every rule', () => {
       expect(valid('Abcdef1!').success).toBe(true);
     });
 
-    it('accepts both length boundaries (8 and 14)', () => {
+    it('accepts both length boundaries (8 and 100) and rejects 7 and 101', () => {
       expect(valid('Abcdef1!').success).toBe(true);
-      expect(valid('Abcdefghijk1!M').success).toBe(true);
-      expect(valid('Abcdefghijk1!Mx').success).toBe(false);
-    });
-
-    it('rejects length 7 and length 15', () => {
+      expect(valid(`Abcdef1!${'x'.repeat(92)}`).success).toBe(true);
       expect(valid('Abcde1!').success).toBe(false);
-      expect(valid('Abcdefghijklm1!').success).toBe(false);
+      expect(valid(`Abcdef1!${'x'.repeat(93)}`).success).toBe(false);
     });
 
     it.each([
-      ['no lowercase', 'ABCDEF1!', 'lowercase'],
-      ['no uppercase', 'abcdef1!', 'uppercase'],
-      ['no digit', 'Abcdefg!', 'digit'],
-      ['no special character', 'Abcdefg1', 'special character'],
-    ])('reports the missing rule when there is %s', (_label, password, fragment) => {
-      const messages = messagesOf(valid(password));
-      expect(messages.some((m) => m.includes(fragment))).toBe(true);
+      ['no lowercase', 'ABCDEF1!', 'AUTH_PASSWORD_LOWERCASE'],
+      ['no uppercase', 'abcdef1!', 'AUTH_PASSWORD_UPPERCASE'],
+      ['no digit', 'Abcdefg!', 'AUTH_PASSWORD_DIGIT'],
+      ['no special character', 'Abcdefg1', 'AUTH_PASSWORD_SPECIAL'],
+    ])('reports the missing rule when there is %s', (_label, password, code) => {
+      expect(messagesOf(valid(password))).toContain(code);
     });
 
     it('requires a non-empty current password', () => {
@@ -113,8 +79,16 @@ describe('user schemas', () => {
       ).toBe(false);
     });
 
+    it('accepts a current password shorter than the new-password minimum (legacy accounts)', () => {
+      expect(valid('Abcdef1!', 'abc').success).toBe(true);
+    });
+
+    it('rejects a new password equal to the current one', () => {
+      expect(messagesOf(valid('Abcdef1!', 'Abcdef1!'))).toEqual(['NEW_PASSWORD_MUST_DIFFER']);
+    });
+
     it('does not stack complexity messages when the length rule already failed', () => {
-      expect(messagesOf(valid('abc'))).toEqual(['Password must be at least 8 characters']);
+      expect(messagesOf(valid('abc'))).toEqual(['AUTH_PASSWORD_MIN']);
     });
   });
 
@@ -221,7 +195,6 @@ describe('user schemas', () => {
         isActive: true,
         description: '',
         userCode: '',
-        gender: '',
         address: '',
         gradesId: [],
         role: 'STUDENT',
@@ -243,22 +216,22 @@ describe('user schemas', () => {
 
     it('requires all four character classes once the password is 8+ chars', () => {
       expect(messagesOf(createUserSchema.safeParse({ ...base, password: 'abcdefg1!' }))).toEqual([
-        'Password must include at least one uppercase letter (A-Z)',
+        'AUTH_PASSWORD_UPPERCASE',
       ]);
       expect(messagesOf(createUserSchema.safeParse({ ...base, password: 'Abcdefgh!' }))).toEqual([
-        'Password must include at least one digit (0-9)',
+        'AUTH_PASSWORD_DIGIT',
       ]);
       expect(messagesOf(createUserSchema.safeParse({ ...base, password: 'Abcdefgh1' }))).toEqual([
-        'Password must include at least one special character (any symbol that is not a letter or digit)',
+        'AUTH_PASSWORD_SPECIAL',
       ]);
     });
 
-    it('KNOWN ISSUE: passwords of 6-7 chars skip the complexity check entirely (weaker than change-password)', () => {
-      // Pinned to current behaviour. changePasswordSchema requires min 8 and all classes.
-      expect(createUserSchema.safeParse({ ...base, password: 'abcdef' }).success).toBe(true);
+    it('uses the same 8-100 policy as change-password: a 6-character password is refused', () => {
+      expect(createUserSchema.safeParse({ ...base, password: 'Abcde1!' }).success).toBe(false);
       expect(
-        changePasswordSchema.safeParse({ currentPassword: 'x', newPassword: 'abcdef' }).success,
+        changePasswordSchema.safeParse({ currentPassword: 'x', newPassword: 'Abcde1!' }).success,
       ).toBe(false);
+      expect(createUserSchema.safeParse({ ...base, password: 'Abcdef1!' }).success).toBe(true);
     });
 
     it('rejects a self-chosen role outside the enum and accepts ADMIN/TUTOR/PARENT/STUDENT', () => {

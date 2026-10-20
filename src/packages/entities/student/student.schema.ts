@@ -10,6 +10,7 @@ export const createStudentSchema = z.object({
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
   studentPhone: z.string().max(20).optional(),
   school: z.string().max(255).optional(),
+  parentId: z.string().uuid({ message: 'Parent id must be uuid' }).optional(),
   parentName: z
     .string({ message: 'Parent name must be required ...' })
     .min(1, { message: 'Parent name must be 1 character ...' })
@@ -29,6 +30,7 @@ export const updateStudentSchema = z.object({
   address: z.string().max(500).optional(),
   district: z.string().max(30).optional(),
   province: z.string().max(30).optional(),
+  parentId: z.string().uuid({ message: 'Parent id must be uuid' }).optional(),
   parentName: z.string().min(1).max(255).optional(),
   parentPhone: z.string().max(20).optional(),
   parentEmail: z.string().email('Invalid parent email').optional(),

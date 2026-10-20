@@ -20,7 +20,8 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { StatusCodes } from 'http-status-codes';
-import { Roles } from '@packages/decorators';
+import { CurrentUser, Roles } from '@packages/decorators';
+import { actorFrom } from '../user/user.service';
 import { RolesGuard } from '@packages/guards';
 import { ZodValidationPipe } from '@packages/pipes';
 import {
@@ -117,8 +118,11 @@ export class AdminController {
   @ApiOperation({ summary: 'Create tutor', description: 'Create a new TUTOR account (admin only)' })
   @ApiBody({ schema: CREATE_ACCOUNT_BODY_SCHEMA })
   @SwaggerResponse({ status: 201, description: 'Tutor created' })
-  createTutor(@Body(new ZodValidationPipe(createManagedUserSchema)) dto: CreateManagedUserDto) {
-    return this.adminService.createTutor(dto);
+  createTutor(
+    @CurrentUser() user: Record<string, string>,
+    @Body(new ZodValidationPipe(createManagedUserSchema)) dto: CreateManagedUserDto,
+  ) {
+    return this.adminService.createTutor(dto, actorFrom(user));
   }
 
   @Get('tutors')
@@ -135,10 +139,11 @@ export class AdminController {
   @ApiQuery({ name: 'isActive', required: false, enum: ['true', 'false'] })
   @SwaggerResponse({ status: 200, description: 'Tutors fetched' })
   listTutors(
+    @CurrentUser() user: Record<string, string>,
     @Query(new ZodValidationPipe<ListManagedUsersQueryDto>(listManagedUsersQuerySchema))
     query: ListManagedUsersQueryDto,
   ) {
-    return this.adminService.listTutors(query);
+    return this.adminService.listTutors(query, actorFrom(user));
   }
 
   @Get('tutors/:id')
@@ -147,8 +152,8 @@ export class AdminController {
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
   @SwaggerResponse({ status: 200, description: 'Tutor detail' })
   @SwaggerResponse({ status: 404, description: 'Tutor not found' })
-  getTutor(@Param('id') id: string) {
-    return this.adminService.getTutor(id);
+  getTutor(@CurrentUser() user: Record<string, string>, @Param('id') id: string) {
+    return this.adminService.getTutor(id, actorFrom(user));
   }
 
   @Put('tutors/:id')
@@ -158,10 +163,11 @@ export class AdminController {
   @ApiBody({ schema: UPDATE_ACCOUNT_BODY_SCHEMA })
   @SwaggerResponse({ status: 200, description: 'Tutor updated' })
   updateTutor(
+    @CurrentUser() user: Record<string, string>,
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateManagedUserSchema)) dto: UpdateManagedUserDto,
   ) {
-    return this.adminService.updateTutor(id, dto);
+    return this.adminService.updateTutor(id, dto, actorFrom(user));
   }
 
   @Delete('tutors/:id')
@@ -169,8 +175,8 @@ export class AdminController {
   @ApiOperation({ summary: 'Delete tutor' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
   @SwaggerResponse({ status: 200, description: 'Tutor deleted' })
-  deleteTutor(@Param('id') id: string) {
-    return this.adminService.deleteTutor(id);
+  deleteTutor(@CurrentUser() user: Record<string, string>, @Param('id') id: string) {
+    return this.adminService.deleteTutor(id, actorFrom(user));
   }
 
   // ─── Students ──────────────────────────────────────────────────────
@@ -182,8 +188,11 @@ export class AdminController {
   })
   @ApiBody({ schema: CREATE_ACCOUNT_BODY_SCHEMA })
   @SwaggerResponse({ status: 201, description: 'Student created' })
-  createStudent(@Body(new ZodValidationPipe(createManagedUserSchema)) dto: CreateManagedUserDto) {
-    return this.adminService.createStudent(dto);
+  createStudent(
+    @CurrentUser() user: Record<string, string>,
+    @Body(new ZodValidationPipe(createManagedUserSchema)) dto: CreateManagedUserDto,
+  ) {
+    return this.adminService.createStudent(dto, actorFrom(user));
   }
 
   @Get('students')
@@ -203,10 +212,11 @@ export class AdminController {
   @ApiQuery({ name: 'isActive', required: false, enum: ['true', 'false'] })
   @SwaggerResponse({ status: 200, description: 'Students fetched' })
   listStudents(
+    @CurrentUser() user: Record<string, string>,
     @Query(new ZodValidationPipe<ListManagedUsersQueryDto>(listManagedUsersQuerySchema))
     query: ListManagedUsersQueryDto,
   ) {
-    return this.adminService.listStudents(query);
+    return this.adminService.listStudents(query, actorFrom(user));
   }
 
   @Get('students/:id')
@@ -215,8 +225,8 @@ export class AdminController {
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
   @SwaggerResponse({ status: 200, description: 'Student detail' })
   @SwaggerResponse({ status: 404, description: 'Student not found' })
-  getStudent(@Param('id') id: string) {
-    return this.adminService.getStudent(id);
+  getStudent(@CurrentUser() user: Record<string, string>, @Param('id') id: string) {
+    return this.adminService.getStudent(id, actorFrom(user));
   }
 
   @Put('students/:id')
@@ -229,10 +239,11 @@ export class AdminController {
   @ApiBody({ schema: UPDATE_STUDENT_BODY_SCHEMA })
   @SwaggerResponse({ status: 200, description: 'Student updated' })
   updateStudent(
+    @CurrentUser() user: Record<string, string>,
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateManagedStudentSchema)) dto: UpdateManagedStudentDto,
   ) {
-    return this.adminService.updateStudent(id, dto);
+    return this.adminService.updateStudent(id, dto, actorFrom(user));
   }
 
   @Delete('students/:id')
@@ -240,7 +251,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Delete student' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
   @SwaggerResponse({ status: 200, description: 'Student deleted' })
-  deleteStudent(@Param('id') id: string) {
-    return this.adminService.deleteStudent(id);
+  deleteStudent(@CurrentUser() user: Record<string, string>, @Param('id') id: string) {
+    return this.adminService.deleteStudent(id, actorFrom(user));
   }
 }

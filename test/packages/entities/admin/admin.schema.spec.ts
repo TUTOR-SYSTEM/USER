@@ -28,36 +28,25 @@ describe('createManagedUserSchema', () => {
     expect(parsed.dateOfBirth).toBeInstanceOf(Date);
   });
 
-  it('reports each missing password character class for an 8-14 char password', () => {
-    expect(messagesFor('ABCDEF1!')).toEqual([
-      'Password must include at least one lowercase letter (a-z)',
-    ]);
-    expect(messagesFor('abcdef1!')).toEqual([
-      'Password must include at least one uppercase letter (A-Z)',
-    ]);
-    expect(messagesFor('Abcdefg!')).toEqual(['Password must include at least one digit (0-9)']);
-    expect(messagesFor('Abcdefg1')).toEqual([
-      'Password must include at least one special character',
-    ]);
+  it('reports each missing password character class (shared policy codes)', () => {
+    expect(messagesFor('abcdefg1!')).toEqual(['AUTH_PASSWORD_UPPERCASE']);
+    expect(messagesFor('ABCDEFG1!')).toEqual(['AUTH_PASSWORD_LOWERCASE']);
+    expect(messagesFor('Abcdefg!')).toEqual(['AUTH_PASSWORD_DIGIT']);
+    expect(messagesFor('Abcdefg1')).toEqual(['AUTH_PASSWORD_SPECIAL']);
   });
 
   it('reports every failing rule at once', () => {
     expect(messagesFor('abcdefgh')).toEqual([
-      'Password must include at least one uppercase letter (A-Z)',
-      'Password must include at least one digit (0-9)',
-      'Password must include at least one special character',
+      'AUTH_PASSWORD_UPPERCASE',
+      'AUTH_PASSWORD_DIGIT',
+      'AUTH_PASSWORD_SPECIAL',
     ]);
   });
 
-  it('skips the complexity rules outside the 8-14 char window (base 6-20 rule still applies)', () => {
-    expect(messagesFor('abcdef')).toEqual([]);
-    expect(messagesFor('abcdefghijklmno')).toEqual([]);
-  });
-
-  it('enforces the base password length bounds', () => {
-    expect(messagesFor('Ab1!')).toEqual(['Password must be at least 6 characters']);
-    expect(messagesFor('Abcdefghijklmnopqrs1!')).toEqual([
-      'Password must be at most 20 characters',
-    ]);
+  it('accepts the 8-100 length window with the complexity rules and rejects outside it', () => {
+    expect(messagesFor('Abcdef1!')).toEqual([]);
+    expect(messagesFor(`Abcdef1!${'x'.repeat(92)}`)).toEqual([]);
+    expect(messagesFor('Abc1!')).toEqual(['AUTH_PASSWORD_MIN']);
+    expect(messagesFor(`Abcdef1!${'x'.repeat(93)}`)).toEqual(['AUTH_PASSWORD_MAX']);
   });
 });

@@ -7,6 +7,15 @@ import { AdminController } from 'src/features/admin/admin.controller';
 import { AdminService } from 'src/features/admin/admin.service';
 
 const ID = '33333333-3333-4333-8333-333333333333';
+const ACTOR_ID = '44444444-4444-4444-8444-444444444444';
+const ADMIN_USER = {
+  id: ACTOR_ID,
+  role: 'ADMIN',
+  email: 'admin@example.test',
+  typ: 'access',
+  sid: ID,
+};
+const ACTOR = { id: ACTOR_ID, role: 'ADMIN' };
 
 describe('AdminController', () => {
   let controller: AdminController;
@@ -64,41 +73,41 @@ describe('AdminController', () => {
     const query = { page: 1, limit: 10 } as never;
 
     it('tutor routes forward dto/query/id to the matching tutor method', async () => {
-      await controller.createTutor(dto);
-      await controller.listTutors(query);
-      await controller.getTutor(ID);
-      await controller.updateTutor(ID, dto);
-      await controller.deleteTutor(ID);
-      expect(service.createTutor).toHaveBeenCalledWith(dto);
-      expect(service.listTutors).toHaveBeenCalledWith(query);
-      expect(service.getTutor).toHaveBeenCalledWith(ID);
-      expect(service.updateTutor).toHaveBeenCalledWith(ID, dto);
-      expect(service.deleteTutor).toHaveBeenCalledWith(ID);
+      await controller.createTutor(ADMIN_USER, dto);
+      await controller.listTutors(ADMIN_USER, query);
+      await controller.getTutor(ADMIN_USER, ID);
+      await controller.updateTutor(ADMIN_USER, ID, dto);
+      await controller.deleteTutor(ADMIN_USER, ID);
+      expect(service.createTutor).toHaveBeenCalledWith(dto, ACTOR);
+      expect(service.listTutors).toHaveBeenCalledWith(query, ACTOR);
+      expect(service.getTutor).toHaveBeenCalledWith(ID, ACTOR);
+      expect(service.updateTutor).toHaveBeenCalledWith(ID, dto, ACTOR);
+      expect(service.deleteTutor).toHaveBeenCalledWith(ID, ACTOR);
     });
 
     it('student routes forward dto/query/id to the matching student method', async () => {
-      await controller.createStudent(dto);
-      await controller.listStudents(query);
-      await controller.getStudent(ID);
-      await controller.updateStudent(ID, dto);
-      await controller.deleteStudent(ID);
-      expect(service.createStudent).toHaveBeenCalledWith(dto);
-      expect(service.listStudents).toHaveBeenCalledWith(query);
-      expect(service.getStudent).toHaveBeenCalledWith(ID);
-      expect(service.updateStudent).toHaveBeenCalledWith(ID, dto);
-      expect(service.deleteStudent).toHaveBeenCalledWith(ID);
+      await controller.createStudent(ADMIN_USER, dto);
+      await controller.listStudents(ADMIN_USER, query);
+      await controller.getStudent(ADMIN_USER, ID);
+      await controller.updateStudent(ADMIN_USER, ID, dto);
+      await controller.deleteStudent(ADMIN_USER, ID);
+      expect(service.createStudent).toHaveBeenCalledWith(dto, ACTOR);
+      expect(service.listStudents).toHaveBeenCalledWith(query, ACTOR);
+      expect(service.getStudent).toHaveBeenCalledWith(ID, ACTOR);
+      expect(service.updateStudent).toHaveBeenCalledWith(ID, dto, ACTOR);
+      expect(service.deleteStudent).toHaveBeenCalledWith(ID, ACTOR);
     });
 
     it('does not cross-wire tutor and student methods', async () => {
-      await controller.getTutor(ID);
+      await controller.getTutor(ADMIN_USER, ID);
       expect(service.getStudent).not.toHaveBeenCalled();
-      await controller.getStudent(ID);
+      await controller.getStudent(ADMIN_USER, ID);
       expect(service.getTutor).toHaveBeenCalledTimes(1);
     });
 
     it('returns whatever the service resolves with', async () => {
       service.listStudents.mockResolvedValueOnce({ data: [{ id: 1 }], total: 1 });
-      await expect(controller.listStudents(query)).resolves.toEqual({
+      await expect(controller.listStudents(ADMIN_USER, query)).resolves.toEqual({
         data: [{ id: 1 }],
         total: 1,
       });

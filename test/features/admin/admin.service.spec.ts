@@ -12,6 +12,7 @@ jest.mock('src/features/admin/admin.repository', () => ({
 
 const USER_ID = '6f1c2b4e-9d3a-4c7e-8b21-0a1b2c3d4e5f';
 const OTHER_ID = '0b9e7d1a-2c3f-4a5b-9c8d-7e6f5a4b3c2d';
+const ADMIN_ACTOR = { id: OTHER_ID, role: 'ADMIN' };
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -30,6 +31,7 @@ function row(overrides: Record<string, unknown> = {}) {
 describe('AdminService', () => {
   let service: AdminService;
   let repo: Record<string, jest.Mock>;
+  let rmq: { send: jest.Mock; emit: jest.Mock };
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -48,8 +50,13 @@ describe('AdminService', () => {
       updateByIdAndRole: jest.fn().mockResolvedValue(undefined),
       deleteByIdAndRole: jest.fn().mockResolvedValue(undefined),
       list: jest.fn().mockResolvedValue({ rows: [], pagination: { total: 0 } }),
+      countLinkedUsers: jest.fn().mockResolvedValue(0),
     };
-    service = new AdminService(repo as unknown as AdminRepository);
+    rmq = {
+      send: jest.fn().mockResolvedValue({ deleted: 0 }),
+      emit: jest.fn().mockResolvedValue(undefined),
+    };
+    service = new AdminService(repo as unknown as AdminRepository, rmq as never);
   });
 
   afterEach(() => {
@@ -66,7 +73,7 @@ describe('AdminService', () => {
 
   describe('createTutor / createStudent', () => {
     it('lowercases and trims the email, hashes the password and assigns a userCode to tutors', async () => {
-      await service.createTutor(createDto as never);
+      await service.createTutor(createDto as never, ADMIN_ACTOR);
 
       const values = repo.create.mock.calls[0][0] as Record<string, string>;
       expect(values.email).toBe('new.tutor@example.test');
@@ -77,7 +84,7 @@ describe('AdminService', () => {
     });
 
     it('does not assign a userCode to students and joins subjects into one string', async () => {
-      await service.createStudent(createDto as never);
+      await service.createStudent(createDto as never, ADMIN_ACTOR);
 
       const values = repo.create.mock.calls[0][0] as Record<string, unknown>;
       expect(values.role).toBe('STUDENT');
@@ -88,8 +95,8 @@ describe('AdminService', () => {
     it('rejects an email already in use, case-insensitively', async () => {
       repo.findByEmail.mockResolvedValue([row()]);
 
-      await expect(service.createTutor(createDto as never)).rejects.toMatchObject({
-        message: `${ERROR_MESSAGES.EMAIL_EXISTS}: new.tutor@example.test`,
+      await expect(service.createTutor(createDto as never, ADMIN_ACTOR)).rejects.toMatchObject({
+        message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS,
       });
       expect(repo.create).not.toHaveBeenCalled();
     });
@@ -98,7 +105,7 @@ describe('AdminService', () => {
       repo.findByUsername.mockResolvedValue([row()]);
 
       await expect(
-        service.createStudent({ ...createDto, username: 'taken' } as never),
+        service.createStudent({ ...createDto, username: 'taken' } as never, ADMIN_ACTOR),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(repo.create).not.toHaveBeenCalled();
     });
@@ -108,7 +115,7 @@ describe('AdminService', () => {
     it('returns tutors under the "tutors" key and splits subjects into an array', async () => {
       repo.list.mockResolvedValue({ rows: [row()], pagination: { total: 1 } });
 
-      const result = await service.listTutors({ page: 1, limit: 10 } as never);
+      const result = await service.listTutors({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
 
       expect(repo.list).toHaveBeenCalledWith(expect.objectContaining({ role: 'TUTOR' }));
       expect(result).toEqual({
@@ -123,7 +130,7 @@ describe('AdminService', () => {
         pagination: {},
       });
 
-      const result = await service.listStudents({ page: 1, limit: 10 } as never);
+      const result = await service.listStudents({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
 
       expect(repo.list).toHaveBeenCalledWith(expect.objectContaining({ role: 'STUDENT' }));
       expect(result).toHaveProperty('students');
@@ -134,7 +141,7 @@ describe('AdminService', () => {
 
   describe('getTutor / getStudent', () => {
     it('rejects a malformed id before querying', async () => {
-      await expect(service.getTutor('not-a-uuid')).rejects.toMatchObject({
+      await expect(service.getTutor('not-a-uuid', ADMIN_ACTOR)).rejects.toMatchObject({
         constructor: BadRequestException,
         message: ERROR_MESSAGES.ADMIN_INVALID_ID,
       });
@@ -142,7 +149,7 @@ describe('AdminService', () => {
     });
 
     it('returns NotFound with the tutor-specific message when the id is not a tutor', async () => {
-      await expect(service.getTutor(USER_ID)).rejects.toMatchObject({
+      await expect(service.getTutor(USER_ID, ADMIN_ACTOR)).rejects.toMatchObject({
         constructor: NotFoundException,
         message: ERROR_MESSAGES.TUTOR_NOT_FOUND,
       });
@@ -150,7 +157,7 @@ describe('AdminService', () => {
     });
 
     it('returns NotFound with the student-specific message for a missing student', async () => {
-      await expect(service.getStudent(USER_ID)).rejects.toMatchObject({
+      await expect(service.getStudent(USER_ID, ADMIN_ACTOR)).rejects.toMatchObject({
         message: ERROR_MESSAGES.STUDENT_NOT_FOUND,
       });
     });
@@ -159,7 +166,7 @@ describe('AdminService', () => {
       repo.findStudentDetail.mockResolvedValue(row({ role: 'STUDENT', parentId: OTHER_ID }));
       repo.findParentInfo.mockResolvedValue({ id: OTHER_ID, firstName: 'Parent' });
 
-      const result = await service.getStudent(USER_ID);
+      const result = await service.getStudent(USER_ID, ADMIN_ACTOR);
 
       expect(repo.findParentInfo).toHaveBeenCalledWith(OTHER_ID);
       expect(result.parent).toEqual({ id: OTHER_ID, firstName: 'Parent' });
@@ -169,7 +176,7 @@ describe('AdminService', () => {
     it('returns parent: null and skips the parent lookup when none is linked', async () => {
       repo.findStudentDetail.mockResolvedValue(row({ role: 'STUDENT', parentId: null }));
 
-      const result = await service.getStudent(USER_ID);
+      const result = await service.getStudent(USER_ID, ADMIN_ACTOR);
 
       expect(repo.findParentInfo).not.toHaveBeenCalled();
       expect(result.parent).toBeNull();
@@ -187,7 +194,7 @@ describe('AdminService', () => {
       repo.findByUserCode.mockResolvedValue([row({ id: OTHER_ID })]);
 
       await expect(
-        service.updateStudent(USER_ID, { userCode: 'ABC123' } as never),
+        service.updateStudent(USER_ID, { userCode: 'ABC123' } as never, ADMIN_ACTOR),
       ).rejects.toMatchObject({
         constructor: ConflictException,
         message: `${ERROR_MESSAGES.STUDENT_CODE_EXISTS}: ABC123`,
@@ -199,7 +206,7 @@ describe('AdminService', () => {
       repo.findByUserCode.mockResolvedValue([row({ id: USER_ID })]);
 
       await expect(
-        service.updateStudent(USER_ID, { userCode: 'ABC123' } as never),
+        service.updateStudent(USER_ID, { userCode: 'ABC123' } as never, ADMIN_ACTOR),
       ).resolves.toBeDefined();
     });
 
@@ -207,7 +214,7 @@ describe('AdminService', () => {
       repo.existsWithRole.mockResolvedValue(false);
 
       await expect(
-        service.updateStudent(USER_ID, { parentId: OTHER_ID } as never),
+        service.updateStudent(USER_ID, { parentId: OTHER_ID } as never, ADMIN_ACTOR),
       ).rejects.toMatchObject({
         message: ERROR_MESSAGES.PARENT_NOT_FOUND,
       });
@@ -218,7 +225,7 @@ describe('AdminService', () => {
       repo.existsWithRole.mockResolvedValue(false);
 
       await expect(
-        service.updateStudent(USER_ID, { tutorId: OTHER_ID } as never),
+        service.updateStudent(USER_ID, { tutorId: OTHER_ID } as never, ADMIN_ACTOR),
       ).rejects.toMatchObject({
         message: ERROR_MESSAGES.TUTOR_NOT_FOUND,
       });
@@ -226,7 +233,11 @@ describe('AdminService', () => {
     });
 
     it('writes through the STUDENT role and returns the enriched student', async () => {
-      const result = await service.updateStudent(USER_ID, { firstName: 'Changed' } as never);
+      const result = await service.updateStudent(
+        USER_ID,
+        { firstName: 'Changed' } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.updateByIdAndRole).toHaveBeenCalledWith(
         USER_ID,
@@ -247,13 +258,13 @@ describe('AdminService', () => {
       repo.findByEmail.mockResolvedValue([row({ id: OTHER_ID })]);
 
       await expect(
-        service.updateTutor(USER_ID, { email: 'dup@example.test' } as never),
+        service.updateTutor(USER_ID, { email: 'dup@example.test' } as never, ADMIN_ACTOR),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(repo.updateByIdAndRole).not.toHaveBeenCalled();
     });
 
     it('clears subjects when an empty list is sent', async () => {
-      await service.updateTutor(USER_ID, { subjects: [] } as never);
+      await service.updateTutor(USER_ID, { subjects: [] } as never, ADMIN_ACTOR);
 
       expect(repo.updateByIdAndRole).toHaveBeenCalledWith(
         USER_ID,
@@ -263,7 +274,7 @@ describe('AdminService', () => {
     });
 
     it('trims and joins subjects when a list is sent', async () => {
-      await service.updateTutor(USER_ID, { subjects: ['a', ' b '] } as never);
+      await service.updateTutor(USER_ID, { subjects: ['a', ' b '] } as never, ADMIN_ACTOR);
 
       expect(repo.updateByIdAndRole).toHaveBeenCalledWith(
         USER_ID,
@@ -275,11 +286,11 @@ describe('AdminService', () => {
     it('returns NotFound when the row vanishes between the read and the write', async () => {
       repo.updateByIdAndRole.mockResolvedValue(undefined);
 
-      await expect(service.updateTutor(USER_ID, { firstName: 'X' } as never)).rejects.toMatchObject(
-        {
-          message: ERROR_MESSAGES.TUTOR_NOT_FOUND,
-        },
-      );
+      await expect(
+        service.updateTutor(USER_ID, { firstName: 'X' } as never, ADMIN_ACTOR),
+      ).rejects.toMatchObject({
+        message: ERROR_MESSAGES.TUTOR_NOT_FOUND,
+      });
     });
   });
 
@@ -290,7 +301,11 @@ describe('AdminService', () => {
     });
 
     it('normalizes a new email (trim + lowercase) when no other account uses it', async () => {
-      await service.updateTutor(USER_ID, { email: '  Fresh.Mail@EXAMPLE.test ' } as never);
+      await service.updateTutor(
+        USER_ID,
+        { email: '  Fresh.Mail@EXAMPLE.test ' } as never,
+        ADMIN_ACTOR,
+      );
 
       expect(repo.findByEmail).toHaveBeenCalledWith('fresh.mail@example.test');
       expect(repo.updateByIdAndRole).toHaveBeenCalledWith(
@@ -304,7 +319,7 @@ describe('AdminService', () => {
       repo.findByUsername.mockResolvedValue([row({ id: OTHER_ID })]);
 
       await expect(
-        service.updateTutor(USER_ID, { username: ' taken ' } as never),
+        service.updateTutor(USER_ID, { username: ' taken ' } as never, ADMIN_ACTOR),
       ).rejects.toMatchObject({
         message: `${ERROR_MESSAGES.USERNAME_EXISTS}: taken`,
       });
@@ -314,7 +329,7 @@ describe('AdminService', () => {
     it('allows keeping the username the row already has', async () => {
       repo.findByUsername.mockResolvedValue([row({ id: USER_ID })]);
 
-      await service.updateTutor(USER_ID, { username: 'managed' } as never);
+      await service.updateTutor(USER_ID, { username: 'managed' } as never, ADMIN_ACTOR);
 
       expect(repo.updateByIdAndRole).toHaveBeenCalledWith(
         USER_ID,
@@ -324,7 +339,7 @@ describe('AdminService', () => {
     });
 
     it('keeps a supplied free username on create (trimmed)', async () => {
-      await service.createTutor({ ...createDto, username: '  bao.tran  ' } as never);
+      await service.createTutor({ ...createDto, username: '  bao.tran  ' } as never, ADMIN_ACTOR);
 
       expect(repo.findByUsername).toHaveBeenCalledWith('bao.tran');
       expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ username: 'bao.tran' }));
@@ -333,7 +348,7 @@ describe('AdminService', () => {
     it('gives up with Conflict once every generated username candidate is taken', async () => {
       repo.findByUsername.mockResolvedValue([row({ id: OTHER_ID })]);
 
-      await expect(service.createStudent(createDto as never)).rejects.toMatchObject({
+      await expect(service.createStudent(createDto as never, ADMIN_ACTOR)).rejects.toMatchObject({
         message: `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: Bao Tran`,
       });
       expect(repo.findByUsername).toHaveBeenCalledTimes(10);
@@ -343,7 +358,7 @@ describe('AdminService', () => {
     it('gives up with Conflict after 5 colliding user codes', async () => {
       repo.findByUserCode.mockResolvedValue([row({ id: OTHER_ID })]);
 
-      await expect(service.createTutor(createDto as never)).rejects.toMatchObject({
+      await expect(service.createTutor(createDto as never, ADMIN_ACTOR)).rejects.toMatchObject({
         message: ERROR_MESSAGES.UNABLE_TO_GENERATE_USER_CODE,
       });
       expect(repo.findByUserCode).toHaveBeenCalledTimes(5);
@@ -356,7 +371,7 @@ describe('AdminService', () => {
       repo.findByIdAndRole.mockResolvedValue(undefined);
 
       await expect(
-        service.updateStudent(USER_ID, { firstName: 'X' } as never),
+        service.updateStudent(USER_ID, { firstName: 'X' } as never, ADMIN_ACTOR),
       ).rejects.toMatchObject({
         message: ERROR_MESSAGES.STUDENT_NOT_FOUND,
       });
@@ -368,7 +383,7 @@ describe('AdminService', () => {
       repo.updateByIdAndRole.mockResolvedValue(undefined);
 
       await expect(
-        service.updateStudent(USER_ID, { firstName: 'X' } as never),
+        service.updateStudent(USER_ID, { firstName: 'X' } as never, ADMIN_ACTOR),
       ).rejects.toMatchObject({
         message: ERROR_MESSAGES.STUDENT_NOT_FOUND,
       });
@@ -377,7 +392,7 @@ describe('AdminService', () => {
     it('deleteTutor reports the tutor-specific NotFound when nothing is deleted', async () => {
       repo.deleteByIdAndRole.mockResolvedValue(undefined);
 
-      await expect(service.deleteTutor(USER_ID)).rejects.toMatchObject({
+      await expect(service.deleteTutor(USER_ID, ADMIN_ACTOR)).rejects.toMatchObject({
         message: ERROR_MESSAGES.TUTOR_NOT_FOUND,
       });
     });
@@ -385,7 +400,7 @@ describe('AdminService', () => {
     it('creates a student without subjects and stores no subjects value', async () => {
       const { subjects: _omit, ...withoutSubjects } = createDto;
 
-      await service.createStudent(withoutSubjects as never);
+      await service.createStudent(withoutSubjects as never, ADMIN_ACTOR);
 
       const values = repo.create.mock.calls[0][0] as Record<string, unknown>;
       expect(values.subjects).toBeUndefined();
@@ -394,23 +409,36 @@ describe('AdminService', () => {
 
   describe('deleteTutor / deleteStudent', () => {
     it('deletes only within the requested role', async () => {
+      repo.findByIdAndRole.mockResolvedValue(row());
       repo.deleteByIdAndRole.mockResolvedValue({ id: USER_ID });
 
-      await expect(service.deleteTutor(USER_ID)).resolves.toEqual({ id: USER_ID });
+      await expect(service.deleteTutor(USER_ID, ADMIN_ACTOR)).resolves.toEqual({ id: USER_ID });
       expect(repo.deleteByIdAndRole).toHaveBeenCalledWith(USER_ID, 'TUTOR');
 
-      await service.deleteStudent(USER_ID);
+      await service.deleteStudent(USER_ID, ADMIN_ACTOR);
       expect(repo.deleteByIdAndRole).toHaveBeenLastCalledWith(USER_ID, 'STUDENT');
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', {
+        prefix: `session:${USER_ID}:`,
+      });
+    });
+
+    it('rejects a non-ADMIN caller before touching the database', async () => {
+      await expect(
+        service.deleteTutor(USER_ID, { id: OTHER_ID, role: 'TUTOR' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.FORBIDDEN_USER_ACTION });
+      expect(repo.findByIdAndRole).not.toHaveBeenCalled();
     });
 
     it('returns the student-specific NotFound when deleting a non-student id', async () => {
-      await expect(service.deleteStudent(USER_ID)).rejects.toMatchObject({
+      await expect(service.deleteStudent(USER_ID, ADMIN_ACTOR)).rejects.toMatchObject({
         message: ERROR_MESSAGES.STUDENT_NOT_FOUND,
       });
     });
 
     it('rejects a malformed id without touching the database', async () => {
-      await expect(service.deleteTutor('bad')).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.deleteTutor('bad', ADMIN_ACTOR)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(repo.deleteByIdAndRole).not.toHaveBeenCalled();
     });
   });

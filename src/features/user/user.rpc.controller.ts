@@ -1,50 +1,46 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
-import type {
-  ChangePasswordValues,
-  CreateUserDto,
-  GetUsersQueryDto,
-  UpdateUserDto,
-  UserDataFieldDto,
+import {
+  changePasswordSchema,
+  createUserSchema,
+  dataFieldSchema,
+  getUsersQuerySchema,
+  updateUserSchema,
+  updateUserStatusSchema,
+  type ChangePasswordValues,
+  type CreateUserDto,
+  type GetUsersQueryDto,
+  type UpdateUserDto,
+  type UserDataFieldDto,
 } from '@packages/entities/user';
-import { UserActor, UserService } from './user.service';
-
-/** Caller identity the gateway forwards with every admin/tutor-scoped call. */
-interface RpcActorPayload {
-  actorId?: string;
-  actorRole?: string;
-}
-
-/**
- * Splits the caller identity off the payload so it never reaches the data written to the DB.
- * A missing `actorId`/`actorRole` becomes an empty identity, which the service rejects (403).
- */
-function splitActor<T extends RpcActorPayload>(payload: T) {
-  const rest: Partial<T> = { ...payload };
-  delete rest.actorId;
-  delete rest.actorRole;
-  const actor: UserActor = { id: payload.actorId ?? '', role: payload.actorRole ?? '' };
-  return { actor, rest: rest as Omit<T, keyof RpcActorPayload> };
-}
+import { parseRpcPayload, RpcActorPayload, splitRpcActor } from '@packages/helpers';
+import { UserService } from './user.service';
 
 /**
  * Message-pattern mirror of `UserController` — reached only by the gateway's `RmqProducer`
  * over `user_queue` (`user.*` patterns). Delegates to the same `UserService` the HTTP controller
- * uses; no business logic lives here. Authorization is enforced in the service against the
- * forwarded actor, not by trusting the target id in the payload.
+ * uses; no business logic lives here. Every payload is validated with the HTTP schema, and
+ * authorization is enforced in the service against the forwarded actor, not by trusting the
+ * target id in the payload.
  */
 @Controller()
 export class UserRpcController {
   constructor(private readonly userService: UserService) {}
 
   @MessagePattern('user.getUsers')
-  getUsers(@Payload() query: GetUsersQueryDto) {
-    return this.userService.getUsersService(query);
+  async getUsers(@Payload() payload: GetUsersQueryDto & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    return this.userService.getUsersService(
+      parseRpcPayload<GetUsersQueryDto>(getUsersQuerySchema, rest),
+      actor,
+    );
   }
 
   @MessagePattern('user.getDetailUser')
-  getDetailUser(@Payload() payload: { userId: string; expectedRole?: string } & RpcActorPayload) {
-    const { actor, rest } = splitActor(payload);
+  async getDetailUser(
+    @Payload() payload: { userId: string; expectedRole?: string } & RpcActorPayload,
+  ) {
+    const { actor, rest } = splitRpcActor(payload);
     return this.userService.getDetailUserService({
       id: rest.userId,
       actor,
@@ -53,45 +49,67 @@ export class UserRpcController {
   }
 
   @MessagePattern('user.getUserByField')
-  getUserByField(@Payload() dto: UserDataFieldDto) {
-    return this.userService.findUsersByFieldPublic(dto);
+  async getUserByField(@Payload() payload: UserDataFieldDto & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    return this.userService.findUsersByFieldPublic(
+      parseRpcPayload<UserDataFieldDto>(dataFieldSchema, rest),
+      actor,
+    );
   }
 
   @MessagePattern('user.createUser')
-  createUser(@Payload() dto: CreateUserDto) {
-    return this.userService.createUserService(dto);
+  async createUser(@Payload() payload: CreateUserDto & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    return this.userService.createUserByActorService(
+      parseRpcPayload<CreateUserDto>(createUserSchema, rest),
+      actor,
+    );
   }
 
-  /** Self-update or admin edit of a student (`PUT /students/:id`). `role` is ignored (see service). */
+  /** Self-update of the caller's profile. `role` is ignored: it is not a writable field here. */
   @MessagePattern('user.updateUser')
-  updateUser(
+  async updateUser(
     @Payload() payload: { userId: string; role?: string } & RpcActorPayload & UpdateUserDto,
   ) {
-    const { actor, rest } = splitActor(payload);
-    const { userId, ...data } = rest;
-    // The gateway also forwards the caller's `role` on self-updates; it is not a writable field.
-    delete data.role;
-    return this.userService.updateOwnProfileService({ id: userId, actor, data });
+    const { actor, rest } = splitRpcActor(payload);
+    const { userId, ...body } = rest;
+    delete body.role;
+    return this.userService.updateOwnProfileService({
+      id: userId,
+      actor,
+      data: parseRpcPayload<UpdateUserDto>(updateUserSchema, body),
+    });
   }
 
   @MessagePattern('user.updateUserByAdmin')
-  updateUserByAdmin(
+  async updateUserByAdmin(
     @Payload() payload: { id: string; expectedRole?: string } & RpcActorPayload & UpdateUserDto,
   ) {
-    const { actor, rest } = splitActor(payload);
-    const { id, expectedRole, ...data } = rest;
-    return this.userService.updateUserService({ id, data, actor, expectedRole });
+    const { actor, rest } = splitRpcActor(payload);
+    const { id, expectedRole, ...body } = rest;
+    return this.userService.updateUserService({
+      id,
+      data: parseRpcPayload<UpdateUserDto>(updateUserSchema, body),
+      actor,
+      expectedRole,
+    });
   }
 
+  /** Explicit target state (`isActive`), idempotent — not a toggle. */
   @MessagePattern('user.updateStatusUser')
-  updateStatusUser(@Payload() payload: { id: string } & RpcActorPayload) {
-    const { actor, rest } = splitActor(payload);
-    return this.userService.updateStatusUserService({ id: rest.id, actor });
+  async updateStatusUser(@Payload() payload: { id: string; isActive: boolean } & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    const { isActive } = parseRpcPayload<{ isActive: boolean }>(updateUserStatusSchema, {
+      isActive: rest.isActive,
+    });
+    return this.userService.updateStatusUserService({ id: rest.id, isActive, actor });
   }
 
   @MessagePattern('user.deleteUserByAdmin')
-  deleteUserByAdmin(@Payload() payload: { id: string; expectedRole?: string } & RpcActorPayload) {
-    const { actor, rest } = splitActor(payload);
+  async deleteUserByAdmin(
+    @Payload() payload: { id: string; expectedRole?: string } & RpcActorPayload,
+  ) {
+    const { actor, rest } = splitRpcActor(payload);
     return this.userService.deleteUserByAdminService({
       id: rest.id,
       actor,
@@ -100,7 +118,10 @@ export class UserRpcController {
   }
 
   @MessagePattern('user.changePassword')
-  changePassword(@Payload() { userId, ...dto }: { userId: string } & ChangePasswordValues) {
-    return this.userService.changePasswordService(userId, dto);
+  async changePassword(@Payload() { userId, ...dto }: { userId: string } & ChangePasswordValues) {
+    return this.userService.changePasswordService(
+      userId,
+      parseRpcPayload<ChangePasswordValues>(changePasswordSchema, dto),
+    );
   }
 }

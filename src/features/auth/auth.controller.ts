@@ -1,6 +1,11 @@
 import { Body, Controller, Get, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuthGuard } from '@nestjs/passport';
+import {
+  FacebookOAuthCallbackGuard,
+  FacebookOAuthStartGuard,
+  GoogleOAuthCallbackGuard,
+  GoogleOAuthStartGuard,
+} from '@packages/guards/oauth-state.guard';
 import {
   ApiTags,
   ApiOperation,
@@ -60,7 +65,7 @@ export class AuthController {
       properties: {
         email: { type: 'string', format: 'email', example: 'user@example.com' },
         username: { type: 'string', example: 'johndoe' },
-        password: { type: 'string', minLength: 6, maxLength: 25, example: 'Password123!' },
+        password: { type: 'string', minLength: 8, maxLength: 100, example: 'Password123!' },
         firstName: { type: 'string', minLength: 1, maxLength: 25, example: 'John' },
         lastName: { type: 'string', minLength: 1, maxLength: 25, example: 'Doe' },
       },
@@ -89,7 +94,7 @@ export class AuthController {
       required: ['email', 'password'],
       properties: {
         email: { type: 'string', format: 'email', example: 'dang04223@gmail.com' },
-        password: { type: 'string', minLength: 6, maxLength: 25, example: 'Admin@123456' },
+        password: { type: 'string', minLength: 8, maxLength: 100, example: 'Admin@123456' },
       },
     },
   })
@@ -136,7 +141,7 @@ export class AuthController {
       required: ['userCode', 'password', 'role'],
       properties: {
         userCode: { type: 'string', maxLength: 6, example: 'ABC123' },
-        password: { type: 'string', minLength: 6, maxLength: 25, example: 'Password123!' },
+        password: { type: 'string', maxLength: 100, example: 'Password123!' },
         role: { type: 'string', enum: ['PARENT', 'STUDENT'], example: 'STUDENT' },
       },
     },
@@ -237,14 +242,14 @@ export class AuthController {
           format: 'uuid',
           description: 'Reset token (JWT ID) from the reset email',
         },
-        password: { type: 'string', minLength: 6, maxLength: 25, example: 'NewPass123!' },
+        password: { type: 'string', minLength: 8, maxLength: 100, example: 'NewPass123!' },
         newPassword: {
           type: 'string',
-          minLength: 6,
-          maxLength: 25,
+          minLength: 8,
+          maxLength: 100,
           description: 'Alias for password',
         },
-        confirmPassword: { type: 'string', minLength: 6, maxLength: 25, example: 'NewPass123!' },
+        confirmPassword: { type: 'string', minLength: 8, maxLength: 100, example: 'NewPass123!' },
       },
     },
   })
@@ -260,7 +265,7 @@ export class AuthController {
 
   @Public()
   @Get('google')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthStartGuard)
   @ApiOperation({
     summary: 'Google OAuth login',
     description: 'Redirect to Google consent screen for authentication',
@@ -272,7 +277,7 @@ export class AuthController {
 
   @Public()
   @Get('google/callback')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthCallbackGuard)
   @ApiOperation({
     summary: 'Google OAuth callback',
     description: 'Handle Google OAuth callback and return JWT tokens',
@@ -300,7 +305,7 @@ export class AuthController {
   // GET /auth/facebook
   @Public()
   @Get('facebook')
-  @UseGuards(AuthGuard('facebook'))
+  @UseGuards(FacebookOAuthStartGuard)
   @ApiOperation({
     summary: 'Facebook OAuth login',
     description: 'Redirect to Facebook consent screen for authentication',
@@ -313,7 +318,7 @@ export class AuthController {
   // GET /auth/facebook/callback
   @Public()
   @Get('facebook/callback')
-  @UseGuards(AuthGuard('facebook'))
+  @UseGuards(FacebookOAuthCallbackGuard)
   @ApiOperation({
     summary: 'Facebook OAuth callback',
     description: 'Handle Facebook OAuth callback and return JWT tokens',

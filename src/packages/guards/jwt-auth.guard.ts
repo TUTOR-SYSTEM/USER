@@ -9,8 +9,9 @@ import { Inject } from '@nestjs/common';
 import { type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { eq } from 'drizzle-orm';
 
-import type { JwtUserRole } from '@packages/helpers';
+import { checkUuidValid, isSessionActive, type JwtUserRole } from '@packages/helpers';
 import { users } from '@packages/database/schema';
+import { RmqProducer } from '../../features/rabbitmq/rmq.producer';
 
 /** Access-token payload shape (matches access JWTs from `signAccessToken`). */
 export type JwtGuardUser = {
@@ -18,6 +19,8 @@ export type JwtGuardUser = {
   email: string;
   typ: 'access';
   role: JwtUserRole;
+  /** Login session the token belongs to; the session must still exist in Redis. */
+  sid: string;
 };
 
 type RequestWithUser = Request & { user?: JwtGuardUser };
@@ -51,7 +54,17 @@ function parseAccessPayload(decoded: unknown): JwtGuardUser {
   if (o.typ !== 'access' || typeof o.sub !== 'string' || typeof o.email !== 'string') {
     throw new UnauthorizedException('Unauthorized ...');
   }
-  return { id: o.sub, email: o.email, typ: 'access', role: parseJwtUserRole(o.role) };
+  // Legacy access tokens without a session id cannot be revoked, so they are refused.
+  if (typeof o.sid !== 'string' || !checkUuidValid({ data: o.sid })) {
+    throw new UnauthorizedException('Unauthorized ...');
+  }
+  return {
+    id: o.sub,
+    email: o.email,
+    typ: 'access',
+    role: parseJwtUserRole(o.role),
+    sid: o.sid,
+  };
 }
 
 @Injectable()
@@ -63,6 +76,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly configService: ConfigService,
     private readonly reflector: Reflector,
     @Inject(DRIZZLE) private readonly drizzleDB: PostgresJsDatabase<Record<string, never>>,
+    private readonly rmqProducer: RmqProducer,
   ) {
     this.db = drizzleDB;
   }
@@ -100,6 +114,13 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const payload = parseAccessPayload(decoded);
+    // Fail-closed by default: a logged-out (or deactivated/deleted) session stops working at once.
+    const sessionActive = await isSessionActive(this.rmqProducer, payload.id, payload.sid, {
+      failOpen: this.configService.get<string>('SESSION_CHECK_FAIL_OPEN') === 'true',
+    });
+    if (!sessionActive) {
+      throw new UnauthorizedException('Unauthorized ...');
+    }
     request.user = payload;
 
     const user = await this.db
