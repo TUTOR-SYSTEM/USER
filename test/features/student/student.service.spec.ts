@@ -51,6 +51,7 @@ describe('StudentService', () => {
     findById: jest.Mock;
     update: jest.Mock;
     updateParent: jest.Mock;
+    findParentById: jest.Mock;
     delete: jest.Mock;
   };
   let db: ReturnType<typeof makeDb>;
@@ -68,6 +69,7 @@ describe('StudentService', () => {
       findById: jest.fn(),
       update: jest.fn(),
       updateParent: jest.fn(),
+      findParentById: jest.fn(),
       delete: jest.fn(),
     };
     const moduleRef = await Test.createTestingModule({
@@ -853,6 +855,49 @@ describe('StudentService', () => {
         id: 'new-parent',
         data: { address: null, district: 'D', province: null },
       });
+    });
+  });
+
+  describe('parentId linking', () => {
+    const PARENT_ID = '3f0c9a7e-2b1d-4c5e-8f6a-7b8c9d0e1f2a';
+    const parentRow = { id: PARENT_ID, role: 'PARENT', firstName: 'Tran', lastName: 'Thi B' };
+
+    it('create links the existing parent and creates no new PARENT', async () => {
+      repo.findParentById.mockResolvedValue(parentRow);
+      await service.create({ studentName: 'A B', parentId: PARENT_ID } as never, TUTOR);
+      expect(repo.findParentById).toHaveBeenCalledWith({ id: PARENT_ID });
+      expect(repo.createParent).not.toHaveBeenCalled();
+      expect(repo.createStudent).toHaveBeenCalledWith(
+        expect.objectContaining({ parentId: PARENT_ID }),
+      );
+    });
+
+    it('create throws NotFound when the parentId is not a PARENT', async () => {
+      repo.findParentById.mockResolvedValue(null);
+      await expect(
+        service.create({ studentName: 'A B', parentId: PARENT_ID } as never, TUTOR),
+      ).rejects.toThrow(NotFoundException);
+      expect(repo.createStudent).not.toHaveBeenCalled();
+    });
+
+    it('update re-links the student only and leaves the parent record untouched', async () => {
+      repo.findById.mockResolvedValue({ id: STUDENT_ID, parentId: null, tutorId: TUTOR.id });
+      repo.findParentById.mockResolvedValue(parentRow);
+      repo.update.mockImplementation(async ({ data }) => ({ id: STUDENT_ID, ...data }));
+      const result = await service.update(STUDENT_ID, { parentId: PARENT_ID } as never, ADMIN_ACTOR);
+      expect(repo.update).toHaveBeenCalledWith({ id: STUDENT_ID, data: { parentId: PARENT_ID } });
+      expect(repo.updateParent).not.toHaveBeenCalled();
+      expect(repo.createParent).not.toHaveBeenCalled();
+      expect(result).toEqual(expect.objectContaining({ parentId: PARENT_ID }));
+    });
+
+    it('update throws NotFound before writing when the parentId is not a PARENT', async () => {
+      repo.findById.mockResolvedValue({ id: STUDENT_ID, parentId: null, tutorId: TUTOR.id });
+      repo.findParentById.mockResolvedValue(null);
+      await expect(
+        service.update(STUDENT_ID, { parentId: PARENT_ID } as never, ADMIN_ACTOR),
+      ).rejects.toThrow(NotFoundException);
+      expect(repo.update).not.toHaveBeenCalled();
     });
   });
 

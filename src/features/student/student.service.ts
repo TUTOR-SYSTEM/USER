@@ -141,9 +141,14 @@ export class StudentService {
     const studentUsername = await this.generateUsernameFromName(firstName, lastName);
     const hashedStudentPassword = await hashData(generateRandomPassword());
 
-    // 4. If parent info was submitted, create the PARENT user first so it can be linked below.
+    // 4. Link an existing PARENT when `parentId` is given (no new account, its details stay as-is);
+    // otherwise, if parent info was submitted, create the PARENT user first so it can be linked below.
     let parentId: string | null = null;
-    if (dto.parentName) {
+    if (dto.parentId) {
+      const existingParent = await this.repo.findParentById({ id: dto.parentId });
+      if (!existingParent) throw new NotFoundException(ERROR_MESSAGES.PARENT_NOT_FOUND);
+      parentId = existingParent.id;
+    } else if (dto.parentName) {
       const { firstName: parentFirstName, lastName: parentLastName } = this.splitName(
         dto.parentName,
       );
@@ -332,7 +337,13 @@ export class StudentService {
       dto.parentDistrict !== undefined ||
       dto.parentProvince !== undefined;
 
-    if (hasParentField) {
+    if (dto.parentId !== undefined) {
+      // Re-link to an existing PARENT. Only the link changes: the parent's own record is left as-is,
+      // since it may be shared with the student's siblings.
+      const existingParent = await this.repo.findParentById({ id: dto.parentId });
+      if (!existingParent) throw new NotFoundException(ERROR_MESSAGES.PARENT_NOT_FOUND);
+      updated = (await this.repo.update({ id, data: { parentId: existingParent.id } })) ?? student;
+    } else if (hasParentField) {
       if (student.parentId) {
         const parentUpdate: Partial<typeof users.$inferInsert> = {};
         if (dto.parentName !== undefined) {

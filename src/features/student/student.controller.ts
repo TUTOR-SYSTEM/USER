@@ -98,6 +98,11 @@ export class StudentController {
           type: 'string',
           example: 'ABC High School',
         },
+        parentId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Link an existing PARENT instead of creating one from parentName',
+        },
         parentName: {
           type: 'string',
           example: 'Nguyen Van B',
@@ -253,6 +258,7 @@ export class StudentController {
         address: { type: 'string', maxLength: 500, example: '123 Nguyen Trai' },
         district: { type: 'string', maxLength: 30, example: 'Thanh Xuan' },
         province: { type: 'string', maxLength: 30, example: 'Ha Noi' },
+        parentId: { type: 'string', format: 'uuid', nullable: true },
         parentName: { type: 'string', maxLength: 255, example: 'Tran Thi B' },
         parentPhone: { type: 'string', example: '0987654321' },
         parentEmail: { type: 'string', format: 'email', example: 'phuhuynh@gmail.com' },
