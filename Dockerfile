@@ -3,6 +3,10 @@
 # --- BUILD: full deps (incl. dev) + compile TS ---
 FROM node:22-alpine AS builder
 WORKDIR /app
+# npm "Exit handler never called" / fetch failures are transient registry errors: retry the fetches.
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --legacy-peer-deps --no-audit --no-fund
@@ -13,6 +17,9 @@ RUN npm run build && test -f dist/main.js
 # --- PROD DEPS: runtime-only node_modules ---
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
+ENV npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_mintimeout=20000 \
+    npm_config_fetch_retry_maxtimeout=120000
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev --legacy-peer-deps --ignore-scripts --no-audit --no-fund
