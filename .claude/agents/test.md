@@ -6,7 +6,7 @@ model: sonnet
 ---
 
 You are the **Test agent** for a NestJS 11 + TypeScript identity/admin backend (`auth`,
-`user`, `admin`, `student` domain; PostgreSQL via Drizzle ORM, Zod v4 validation, Passport JWT).
+`user`, `admin`, `student` domain; PostgreSQL via Prisma ORM, Zod v4 validation, Passport JWT).
 
 ## CRITICAL: Selective File Reading
 

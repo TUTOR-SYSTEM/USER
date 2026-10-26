@@ -58,6 +58,9 @@ describe('ErrorInterceptor', () => {
     ['23503', 'Referenced record not found (foreign key violation)'],
     ['23505', 'Record already exists (duplicate value)'],
     ['23502', 'Required field is missing (not-null violation)'],
+    ['P2003', 'Referenced record not found (foreign key violation)'],
+    ['P2002', 'Record already exists (duplicate value)'],
+    ['P2011', 'Required field is missing (not-null violation)'],
     ['23514', 'Value violates check constraint'],
   ])('maps postgres code %s to a friendly message', async (code, friendly) => {
     const err = Object.assign(new Error('raw sql text'), { code });
@@ -74,6 +77,13 @@ describe('ErrorInterceptor', () => {
   it('hides drizzle "Failed query:" text behind a generic database error', async () => {
     const out = (await run(
       new Error('Failed query: select * from users'),
+    )) as InternalServerErrorException;
+    expect(out.message).toBe('Database error');
+  });
+
+  it('hides prisma "Invalid `prisma.x()` invocation" text behind a generic database error', async () => {
+    const out = (await run(
+      new Error('\nInvalid `prisma.user.findMany()` invocation:\n\nsomething'),
     )) as InternalServerErrorException;
     expect(out.message).toBe('Database error');
   });

@@ -1,15 +1,52 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { GetStudentsQueryDto } from '@packages/entities/student';
 import { buildListWhereClause } from '@packages/helpers';
-import { and, count, desc, eq } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { DRIZZLE } from 'src/database/database.module';
-import { users } from '@packages/database/schema';
+import { PrismaService } from 'src/database/database.module';
+import type { Prisma } from 'src/generated/prisma/client';
+
+/** Parent contact columns embedded in each student row of the list. */
+const parentSelect = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  phone: true,
+  avatar: true,
+  relationship: true,
+  userCode: true,
+  address: true,
+  district: true,
+  province: true,
+} satisfies Prisma.UserSelect;
+
+/** Student list columns — never includes the password hash. */
+const studentListSelect = {
+  id: true,
+  email: true,
+  username: true,
+  firstName: true,
+  lastName: true,
+  userCode: true,
+  phone: true,
+  avatar: true,
+  gender: true,
+  dateOfBirth: true,
+  school: true,
+  address: true,
+  district: true,
+  province: true,
+  role: true,
+  isActive: true,
+  parentId: true,
+  tutorId: true,
+  createdAt: true,
+  updatedAt: true,
+  parent: { select: parentSelect },
+} satisfies Prisma.UserSelect;
 
 @Injectable()
 export class StudentRepository {
-  constructor(@Inject(DRIZZLE) private readonly db: ReturnType<typeof drizzle>) {}
+  constructor(private readonly db: PrismaService) {}
 
   async createStudent(data: {
     id: string;
@@ -27,11 +64,7 @@ export class StudentRepository {
     parentId: string | null;
     tutorId: string | null;
   }) {
-    const [student] = await this.db
-      .insert(users)
-      .values({ ...data, role: 'STUDENT' })
-      .returning();
-    return student;
+    return this.db.user.create({ data: { ...data, role: 'STUDENT' } });
   }
 
   async createParent(data: {
@@ -47,62 +80,41 @@ export class StudentRepository {
     gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
     tutorId: string | null;
   }) {
-    const [parent] = await this.db
-      .insert(users)
-      .values({ ...data, role: 'PARENT' })
-      .returning();
-    return parent;
+    return this.db.user.create({ data: { ...data, role: 'PARENT' } });
   }
 
   async findById({ id }: { id: string }) {
-    const [row] = await this.db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, id), eq(users.role, 'STUDENT')))
-      .limit(1);
+    const row = await this.db.user.findFirst({ where: { id, role: 'STUDENT' } });
     if (!row) return null;
 
-    const [parent] = row.parentId
-      ? await this.db.select().from(users).where(eq(users.id, row.parentId))
-      : [];
+    const parent = row.parentId
+      ? await this.db.user.findUnique({ where: { id: row.parentId } })
+      : null;
 
-    return { ...row, parent: parent ?? null };
+    return { ...row, parent };
   }
 
-  async update({ id, data }: { id: string; data: Partial<typeof users.$inferInsert> }) {
-    const [student] = await this.db
-      .update(users)
-      .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(users.id, id), eq(users.role, 'STUDENT')))
-      .returning();
-    return student ?? null;
+  async update({ id, data }: { id: string; data: Prisma.UserUncheckedUpdateManyInput }) {
+    return this.updateWithRole(id, 'STUDENT', data);
   }
 
   /** Existing PARENT user to link to a student; null when no PARENT has that id. */
   async findParentById({ id }: { id: string }) {
-    const [row] = await this.db
-      .select()
-      .from(users)
-      .where(and(eq(users.id, id), eq(users.role, 'PARENT')))
-      .limit(1);
-    return row ?? null;
+    return this.db.user.findFirst({ where: { id, role: 'PARENT' } });
   }
 
-  async updateParent({ id, data }: { id: string; data: Partial<typeof users.$inferInsert> }) {
-    const [parent] = await this.db
-      .update(users)
-      .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(users.id, id), eq(users.role, 'PARENT')))
-      .returning();
-    return parent ?? null;
+  async updateParent({ id, data }: { id: string; data: Prisma.UserUncheckedUpdateManyInput }) {
+    return this.updateWithRole(id, 'PARENT', data);
+  }
+
+  async usernameExists(username: string) {
+    const row = await this.db.user.findUnique({ where: { username }, select: { id: true } });
+    return !!row;
   }
 
   async delete({ id }: { id: string }) {
-    const [student] = await this.db
-      .delete(users)
-      .where(and(eq(users.id, id), eq(users.role, 'STUDENT')))
-      .returning();
-    return !!student;
+    const { count } = await this.db.user.deleteMany({ where: { id, role: 'STUDENT' } });
+    return count > 0;
   }
 
   // todo : get and filter student ...
@@ -110,71 +122,34 @@ export class StudentRepository {
     const { page, limit, search, tutorId, gender, isActive } = query;
     const offset = (page - 1) * limit;
 
-    const where = buildListWhereClause({
+    const where = buildListWhereClause<Prisma.UserWhereInput>({
       search,
       searchableColumns: {
-        userCode: { column: users.userCode },
-        firstName: { column: users.firstName },
-        lastName: { column: users.lastName },
+        userCode: { column: 'userCode' },
+        firstName: { column: 'firstName' },
+        lastName: { column: 'lastName' },
       },
       filters: { role: 'STUDENT', tutorId, gender, isActive },
       filterColumns: {
-        role: { column: users.role },
-        tutorId: { column: users.tutorId },
-        gender: { column: users.gender },
-        isActive: { column: users.isActive },
+        role: { column: 'role' },
+        tutorId: { column: 'tutorId' },
+        gender: { column: 'gender' },
+        isActive: { column: 'isActive' },
       },
     });
 
-    const [totalRow] = await this.db.select({ total: count() }).from(users).where(where);
-    const total = Number(totalRow?.total ?? 0);
-
-    // Left-join the linked PARENT user so the list carries full parent contact info too —
-    // `select()` on the bare `users` table (previous behaviour) leaked the password hash and
-    // never included parent data at all.
-    const parents = alias(users, 'parents');
-    const students = await this.db
-      .select({
-        id: users.id,
-        email: users.email,
-        username: users.username,
-        firstName: users.firstName,
-        lastName: users.lastName,
-        userCode: users.userCode,
-        phone: users.phone,
-        avatar: users.avatar,
-        gender: users.gender,
-        dateOfBirth: users.dateOfBirth,
-        school: users.school,
-        address: users.address,
-        district: users.district,
-        province: users.province,
-        role: users.role,
-        isActive: users.isActive,
-        parentId: users.parentId,
-        tutorId: users.tutorId,
-        createdAt: users.createdAt,
-        updatedAt: users.updatedAt,
-        parent: {
-          id: parents.id,
-          firstName: parents.firstName,
-          lastName: parents.lastName,
-          email: parents.email,
-          phone: parents.phone,
-          avatar: parents.avatar,
-          relationship: parents.relationship,
-          userCode: parents.userCode,
-          address: parents.address,
-          district: parents.district,
-          province: parents.province,
-        },
-      })
-      .from(users)
-      .leftJoin(parents, eq(parents.id, users.parentId))
-      .where(where)
-      .orderBy(desc(users.createdAt))
-      .limit(limit)
-      .offset(offset);
+    // The linked PARENT is selected alongside each student so the list carries full parent
+    // contact info; the explicit select keeps the password hash out of the rows.
+    const [total, students] = await Promise.all([
+      this.db.user.count({ where }),
+      this.db.user.findMany({
+        where,
+        select: studentListSelect,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+    ]);
 
     return {
       students,
@@ -184,19 +159,24 @@ export class StudentRepository {
 
   // todo: get detail user by data field (userCode, id , username, name,...)
   async getStudentByField({ field, value }: { field: string; value: string }) {
-    const fieldMap = {
-      id: users.id,
-      firstName: users.firstName,
-      lastName: users.lastName,
-      userCode: users.userCode,
-      username: users.username,
-    } as const;
+    const allowed = ['id', 'firstName', 'lastName', 'userCode', 'username'];
+    if (!allowed.includes(field)) return undefined;
 
-    const [result] = await this.db
-      .select()
-      .from(users)
-      .where(eq(fieldMap[field], value ?? ''));
+    const row = await this.db.user.findFirst({ where: { [field]: value ?? '' } });
+    return row ?? undefined;
+  }
 
-    return result;
+  /** Prisma `update` needs a unique where, so a role-scoped write goes through `updateMany`. */
+  private async updateWithRole(
+    id: string,
+    role: 'STUDENT' | 'PARENT',
+    data: Prisma.UserUncheckedUpdateManyInput,
+  ) {
+    const { count } = await this.db.user.updateMany({
+      where: { id, role },
+      data: { ...data, updatedAt: new Date() },
+    });
+    if (count === 0) return null;
+    return this.db.user.findUnique({ where: { id } });
   }
 }

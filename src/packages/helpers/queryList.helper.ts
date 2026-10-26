@@ -1,11 +1,11 @@
-import { and, eq, ilike, or, type SQL, type SQLWrapper } from 'drizzle-orm';
-
 type SearchableColumn = {
-  column: SQLWrapper;
+  /** Prisma model field name to match with a case-insensitive `contains`. */
+  column: string;
 };
 
 type FilterableColumn<TValue> = {
-  column: SQLWrapper;
+  /** Prisma model field name to match exactly. */
+  column: string;
   transform?: (value: TValue) => TFilterComparable;
 };
 
@@ -23,33 +23,34 @@ export type BuildListWhereClauseParams<
 };
 
 /**
- * Build where-clause for list API:
- * - `search`: OR across configured searchable columns (ILIKE)
- * - `filters`: AND exact-match conditions (EQ), skipping undefined/null
+ * Build a Prisma `where` object for list APIs:
+ * - `search`: OR across configured searchable fields (`contains`, case-insensitive)
+ * - `filters`: AND exact-match conditions, skipping undefined/null
+ *
+ * Returns `undefined` when there is nothing to filter on. `TWhere` is the model's
+ * `Prisma.<Model>WhereInput`, which the generic result is shaped as.
  */
 export function buildListWhereClause<
-  TSearchField extends string,
-  TFilterField extends string,
-  TFilterValue,
+  TWhere extends object,
+  TSearchField extends string = string,
+  TFilterField extends string = string,
+  TFilterValue = unknown,
 >({
   search,
   searchableColumns,
   filters,
   filterColumns,
-}: BuildListWhereClauseParams<TSearchField, TFilterField, TFilterValue>): SQL | undefined {
-  const conditions: SQL[] = [];
+}: BuildListWhereClauseParams<TSearchField, TFilterField, TFilterValue>): TWhere | undefined {
+  const conditions: Record<string, unknown>[] = [];
 
   if (search?.trim()) {
-    const pattern = `%${search.trim()}%`;
+    const term = search.trim();
     const searchConditions = (Object.values(searchableColumns ?? {}) as SearchableColumn[])
-      .map((item) => (item ? ilike(item.column as never, pattern) : undefined))
-      .filter((condition): condition is SQL => condition !== undefined);
+      .filter((item) => !!item)
+      .map((item) => ({ [item.column]: { contains: term, mode: 'insensitive' } }));
 
     if (searchConditions.length > 0) {
-      const searchCondition = or(...searchConditions);
-      if (searchCondition) {
-        conditions.push(searchCondition);
-      }
+      conditions.push({ OR: searchConditions });
     }
   }
 
@@ -61,12 +62,12 @@ export function buildListWhereClause<
       const normalizedValue = item.transform
         ? item.transform(value as TFilterValue)
         : (value as TFilterValue);
-      conditions.push(eq(item.column as never, normalizedValue));
+      conditions.push({ [item.column]: normalizedValue });
     }
   }
 
   if (conditions.length === 0) return undefined;
-  if (conditions.length === 1) return conditions[0];
+  if (conditions.length === 1) return conditions[0] as TWhere;
 
-  return and(...conditions);
+  return { AND: conditions } as TWhere;
 }

@@ -16,7 +16,7 @@ methods) is the closer shape for what you're building, and lean on the inline co
 
 - **Layers**: `{name}.controller.ts` → `{name}.service.ts` → `{name}.repository.ts`, plus
   `{name}.module.ts`. Controllers hold no business logic (they only read `@CurrentUser()` and
-  delegate); repositories hold all Drizzle access.
+  delegate); repositories hold all Prisma access (`PrismaService`).
 - **Entities live separately** under `src/packages/entities/{domain}/` as
   `{domain}.schema.ts` (Zod), `{domain}.dto.ts` (inferred types), and `index.ts` (barrel).
 - **Service methods** are suffixed `...Service` (`createUserService`, `getUsersService`,
@@ -75,7 +75,7 @@ methods) is the closer shape for what you're building, and lean on the inline co
 - **List query conditions**: `buildListWhereClause` from `@packages/helpers` is the standard
   helper for search+filter list endpoints. For simple queries (≤2 filters), manual `and()`/`eq()`
   in the repository is acceptable. The `searchableColumns`/`filterColumns` column config is
-  built *inside the repository* (it needs the Drizzle table object anyway) — the
+  built *inside the repository* (`searchableColumns`/`filterColumns` are Prisma model field names, and `buildListWhereClause<Prisma.XWhereInput>` returns a Prisma `where`) — the
   service/controller only pass through `page`/`limit`/`search`/raw filter values from the query
   DTO, never an empty `{}` placeholder. See `StudentRepository.getAllStudents` or
   `AdminRepository`'s list helper as the reference. Also: double-check a `GET .../` controller

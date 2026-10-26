@@ -1,6 +1,6 @@
 dist
 coverage
 node_modules
-drizzle
+src/generated
 *.log
 package-lock.json

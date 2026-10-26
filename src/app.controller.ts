@@ -1,9 +1,9 @@
-import { BadRequestException, Controller, Get, Inject, Logger } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse as SwaggerResponse } from '@nestjs/swagger';
 import { AppService } from './app.service';
 import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { RmqProducer } from './features/rabbitmq/rmq.producer';
-import { DRIZZLE } from './database/database.module';
+import { PrismaService } from './database/database.module';
 
 @ApiTags('Health')
 @Controller()
@@ -12,7 +12,7 @@ export class AppController {
   constructor(
     private readonly appService: AppService,
     private readonly rmqProducer: RmqProducer,
-    @Inject(DRIZZLE) private readonly db: any,
+    private readonly db: PrismaService,
   ) {}
 
   @Get()
@@ -109,7 +109,7 @@ export class AppController {
       const shouldFetchData = payload?.fetchData ?? false;
 
       // Get total user count
-      const allUsers = await this.db.query.users.findMany();
+      const allUsers = await this.db.user.findMany();
       const totalUsers = allUsers.length;
 
       // Get users by role

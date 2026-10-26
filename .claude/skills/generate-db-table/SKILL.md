@@ -1,36 +1,35 @@
 ---
 name: generate-db-table
-description: Add a Drizzle table (and any pgEnum) to the canonical ../gateway/src/database/schema.ts (mirrored into src/database/schema.ts when USER-owned) for a new domain, then generate the migration in gateway. Use when asked to create/add a database table, schema, column, or enum in this NestJS tutoring backend.
+description: Add a Prisma model (and any enum) to prisma/schema.prisma for a table migrated from ../gateway, then regenerate the client. Use when asked to create/add a database table, schema, column, or enum in this NestJS tutoring backend.
 ---
 
-# Generate Drizzle Table
+# Generate Prisma Model
 
-Add a `pgTable` (and needed `pgEnum`s) to **`../gateway/src/database/schema.ts`** (canonical
-schema + migration owner since 2026-09-28). If this repo queries the table, also copy the
-definition verbatim into the local mirror `src/database/schema.ts` (exists so the Docker build
-doesn't need `../gateway`; never let it diverge). Follow the style of
-the existing `users` / `grades` tables (the schema was trimmed down to just these two on
-2026-09-12 — see `[[trimmed-feature-set]]` memory).
+The shared Postgres schema + migrations are still owned by **`../gateway`** (drizzle there).
+This repo only *maps* the tables it queries in **`prisma/schema.prisma`** — it applies no
+migrations. Follow the style of the existing `User` / `Grade` models (the schema was trimmed to
+just these two on 2026-09-12 — see `[[trimmed-feature-set]]` memory).
 
 ## Inputs
 - Table name (plural, snake_case), e.g. `invoices`.
 - Columns with types, nullability, defaults, foreign keys, and any enum values.
 
 ## Conventions
-- UUID primary key: `id: uuid('id').primaryKey().defaultRandom()`.
-- Enums declared at top of file: `export const fooStatusEnum = pgEnum('foo_status', ['A', 'B']);`
-  then used as `.status: fooStatusEnum('status').notNull()`.
-- Foreign keys: `userId: uuid('user_id').references(() => users.id)`.
+- UUID primary key: `id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid`.
+- Model names are singular PascalCase with `@@map("table_name")`; fields are camelCase with
+  `@map("snake_case")` and an explicit `@db.*` native type (`@db.VarChar(n)`, `@db.Timestamp(6)`…).
+- Enums: `enum FooStatus { A B  @@map("foo_status") }`.
+- Foreign keys: `userId String @map("user_id") @db.Uuid` + `user User @relation(fields: [userId],
+  references: [id], onDelete: Cascade)` — match the `onDelete` of the real constraint.
 - Timestamps:
-  ```ts
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  ```prisma
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
   ```
-- Map camelCase TS property → snake_case column name.
 
-## After editing schema.ts
-1. Run `bun run db:generate` **in `../gateway`** to emit the migration SQL into its `drizzle/`
-   (this repo has no `drizzle.config.ts`/`drizzle-kit`).
-2. Sync the changed USER-owned tables/enums into `src/database/schema.ts` here.
-3. Tell the user to run `bun run db:migrate` (or `bun run db:push` for dev) from `gateway`.
-4. Do NOT hand-edit files in `drizzle/` — they are generated.
+## Steps
+1. Add/alter the table in `../gateway` (schema + generated migration) — that is where the DB changes.
+2. Mirror it in `prisma/schema.prisma` (or `bun run db:pull` against the migrated DB and review the diff).
+3. `bun run db:validate && bun run db:generate` (regenerates `src/generated/prisma`, gitignored).
+4. Never run `prisma db push` / `prisma migrate` against the shared DB; tell the user to run
+   gateway's `db:migrate` (or `db:push` for dev).

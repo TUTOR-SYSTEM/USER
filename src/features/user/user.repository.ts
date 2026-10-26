@@ -1,174 +1,148 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, count, desc, eq, ilike, inArray, or, type SQL } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { DRIZZLE } from '../../database/database.module';
-import { grades, users } from '@packages/database/schema';
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../../database/database.module';
+import type { Prisma } from '../../generated/prisma/client';
 import type { GetUsersQueryDto, UpdateGradeDto, UserDataFieldDto } from '@packages/entities/user';
+
+const userListSelect = {
+  id: true,
+  email: true,
+  firstName: true,
+  lastName: true,
+  phone: true,
+  avatar: true,
+  role: true,
+  isActive: true,
+  createdAt: true,
+} satisfies Prisma.UserSelect;
 
 @Injectable()
 export class UserRepository {
-  constructor(
-    @Inject(DRIZZLE)
-    private readonly db: ReturnType<typeof drizzle>,
-  ) {}
+  constructor(private readonly db: PrismaService) {}
 
   async findByField(field: UserDataFieldDto['field'], value: string) {
-    const columnMap = {
-      id: users.id,
-      email: users.email,
-      username: users.username,
-      phone: users.phone,
-      userCode: users.userCode,
-    } as const;
+    const allowed = ['id', 'email', 'username', 'phone', 'userCode'];
+    if (!allowed.includes(field)) return [];
 
-    const column = columnMap[field as keyof typeof columnMap];
-    if (!column) return [];
-
-    return this.db.select().from(users).where(eq(column, value));
+    return this.db.user.findMany({ where: { [field]: value } });
   }
 
   async findById(id: string) {
-    const [user] = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
-    return user ?? null;
+    return this.db.user.findUnique({ where: { id } });
   }
 
   async findWithPassword(id: string) {
-    const [user] = await this.db
-      .select({ id: users.id, password: users.password })
-      .from(users)
-      .where(eq(users.id, id))
-      .limit(1);
-    return user ?? null;
+    return this.db.user.findUnique({ where: { id }, select: { id: true, password: true } });
   }
 
   async findUserCode(code: string) {
-    const [user] = await this.db.select().from(users).where(eq(users.userCode, code)).limit(1);
-    return user ?? null;
+    return this.db.user.findFirst({ where: { userCode: code } });
   }
 
-  buildUserListConditions(query: GetUsersQueryDto): SQL | undefined {
+  buildUserListConditions(query: GetUsersQueryDto): Prisma.UserWhereInput | undefined {
     const { search, role, isActive } = query;
-    const conditions: SQL[] = [];
+    const conditions: Prisma.UserWhereInput[] = [];
 
     if (search?.trim()) {
-      const pattern = `%${search.trim()}%`;
-      const searchCond = or(
-        ilike(users.email, pattern),
-        ilike(users.username, pattern),
-        ilike(users.firstName, pattern),
-        ilike(users.lastName, pattern),
-        ilike(users.phone, pattern),
-      );
-      if (searchCond) conditions.push(searchCond);
+      const term = search.trim();
+      const contains = { contains: term, mode: 'insensitive' } as const;
+      conditions.push({
+        OR: [
+          { email: contains },
+          { username: contains },
+          { firstName: contains },
+          { lastName: contains },
+          { phone: contains },
+        ],
+      });
     }
-    if (role !== undefined) conditions.push(eq(users.role, role));
-    if (isActive !== undefined) conditions.push(eq(users.isActive, isActive));
+    if (role !== undefined) conditions.push({ role });
+    if (isActive !== undefined) conditions.push({ isActive });
 
     if (conditions.length === 0) return undefined;
     if (conditions.length === 1) return conditions[0];
-    return and(...conditions);
+    return { AND: conditions };
   }
 
-  async paginateUsers(whereClause: SQL | undefined, limit: number, offset: number) {
-    return this.db
-      .select({
-        id: users.id,
-        email: users.email,
-        firstName: users.firstName,
-        lastName: users.lastName,
-        phone: users.phone,
-        avatar: users.avatar,
-        role: users.role,
-        isActive: users.isActive,
-        createdAt: users.createdAt,
-      })
-      .from(users)
-      .where(whereClause)
-      .orderBy(desc(users.createdAt))
-      .limit(limit)
-      .offset(offset);
+  async paginateUsers(
+    whereClause: Prisma.UserWhereInput | undefined,
+    limit: number,
+    offset: number,
+  ) {
+    return this.db.user.findMany({
+      where: whereClause,
+      select: userListSelect,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+    });
   }
 
-  async countUsers(whereClause: SQL | undefined) {
-    const [row] = await this.db.select({ total: count() }).from(users).where(whereClause);
-    return Number(row?.total ?? 0);
+  async countUsers(whereClause: Prisma.UserWhereInput | undefined) {
+    return this.db.user.count({ where: whereClause });
   }
 
-  async create(data: typeof users.$inferInsert) {
-    const [user] = await this.db.insert(users).values(data).returning();
-    return user;
+  async create(data: Prisma.UserUncheckedCreateInput) {
+    return this.db.user.create({ data });
   }
 
-  async update(id: string, data: Partial<typeof users.$inferInsert>) {
-    const [user] = await this.db
-      .update(users)
-      .set({ ...data, updatedAt: new Date() })
-      .where(eq(users.id, id))
-      .returning();
-    return user ?? null;
+  async update(id: string, data: Prisma.UserUncheckedUpdateInput) {
+    return this.updateOrNull(id, { ...data, updatedAt: new Date() });
   }
 
   async updatePassword(id: string, hashedPassword: string) {
-    const [user] = await this.db
-      .update(users)
-      .set({ password: hashedPassword, updatedAt: new Date() })
-      .where(eq(users.id, id))
-      .returning();
-    return user ?? null;
+    return this.updateOrNull(id, { password: hashedPassword, updatedAt: new Date() });
   }
 
   async delete(id: string) {
-    await this.db.delete(users).where(eq(users.id, id));
+    await this.db.user.deleteMany({ where: { id } });
   }
 
   async countActiveAdmins(): Promise<number> {
-    const [row] = await this.db
-      .select({ total: count() })
-      .from(users)
-      .where(and(eq(users.role, 'ADMIN'), eq(users.isActive, true)));
-    return Number(row?.total ?? 0);
+    return this.db.user.count({ where: { role: 'ADMIN', isActive: true } });
   }
 
   /** Accounts that point at `id` as their tutor or parent — deleting `id` would cascade to them. */
   async countLinkedUsers(id: string): Promise<number> {
-    const [row] = await this.db
-      .select({ total: count() })
-      .from(users)
-      .where(or(eq(users.tutorId, id), eq(users.parentId, id)));
-    return Number(row?.total ?? 0);
+    return this.db.user.count({ where: { OR: [{ tutorId: id }, { parentId: id }] } });
   }
 
   async findGradesByUser(userId: string) {
-    const [user] = await this.db
-      .select({ gradesId: users.gradesId })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+    const user = await this.db.user.findUnique({
+      where: { id: userId },
+      select: { gradesId: true },
+    });
 
     if (!user || !user.gradesId?.length) return [];
 
-    return this.db
-      .select()
-      .from(grades)
-      .where(inArray(grades.id, user.gradesId))
-      .orderBy(asc(grades.level));
+    return this.db.grade.findMany({
+      where: { id: { in: user.gradesId } },
+      orderBy: { level: 'asc' },
+    });
   }
 
   async findGradeById(id: string) {
-    const [grade] = await this.db.select().from(grades).where(eq(grades.id, id)).limit(1);
-    return grade ?? null;
+    return this.db.grade.findUnique({ where: { id } });
   }
 
   async updateGrade(id: string, data: UpdateGradeDto) {
-    const [grade] = await this.db
-      .update(grades)
-      .set({ name: data.name, level: data.level })
-      .where(eq(grades.id, id))
-      .returning();
-    return grade ?? null;
+    const { count } = await this.db.grade.updateMany({
+      where: { id },
+      data: { name: data.name, level: data.level, updatedAt: new Date() },
+    });
+    return count === 0 ? null : this.db.grade.findUnique({ where: { id } });
   }
 
   async validateGradeIds(ids: string[]) {
-    return this.db.select({ id: grades.id }).from(grades).where(inArray(grades.id, ids));
+    return this.db.grade.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  }
+
+  /** Prisma `update` throws on a missing row; the callers expect `null` instead. */
+  private async updateOrNull(id: string, data: Prisma.UserUncheckedUpdateInput) {
+    try {
+      return await this.db.user.update({ where: { id }, data });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2025') return null;
+      throw error;
+    }
   }
 }

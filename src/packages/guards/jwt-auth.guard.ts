@@ -3,14 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { IS_PUBLIC_KEY } from '@packages/decorators';
-import { DRIZZLE } from 'src/database/database.module';
+import { PrismaService } from 'src/database/database.module';
 import type { Request } from 'express';
-import { Inject } from '@nestjs/common';
-import { type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import { eq } from 'drizzle-orm';
 
 import { checkUuidValid, isSessionActive, type JwtUserRole } from '@packages/helpers';
-import { users } from '@packages/database/schema';
 import { RmqProducer } from '../../features/rabbitmq/rmq.producer';
 
 /** Access-token payload shape (matches access JWTs from `signAccessToken`). */
@@ -69,17 +65,13 @@ function parseAccessPayload(decoded: unknown): JwtGuardUser {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  private readonly db: PostgresJsDatabase<Record<string, never>>;
-
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly reflector: Reflector,
-    @Inject(DRIZZLE) private readonly drizzleDB: PostgresJsDatabase<Record<string, never>>,
+    private readonly db: PrismaService,
     private readonly rmqProducer: RmqProducer,
-  ) {
-    this.db = drizzleDB;
-  }
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
@@ -123,13 +115,12 @@ export class JwtAuthGuard implements CanActivate {
     }
     request.user = payload;
 
-    const user = await this.db
-      .select({ id: users.id, isActive: users.isActive })
-      .from(users)
-      .where(eq(users.id, payload.id))
-      .limit(1);
+    const user = await this.db.user.findUnique({
+      where: { id: payload.id },
+      select: { id: true, isActive: true },
+    });
 
-    if (user.length === 0 || user[0].isActive === false) {
+    if (!user || user.isActive === false) {
       throw new UnauthorizedException('Unauthorized ...');
     }
 

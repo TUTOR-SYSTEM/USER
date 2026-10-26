@@ -31,6 +31,8 @@ module.exports = {
   coverageProvider: 'v8',
   testEnvironment: 'node',
   moduleNameMapper: {
+    // Prisma's generated client imports siblings with `.js` specifiers (nodenext style).
+    '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@packages/database/(.*)$': '<rootDir>/src/database/$1',
     '^@packages/(.*)$': '<rootDir>/src/packages/$1',
     '^src/(.*)$': '<rootDir>/src/$1',

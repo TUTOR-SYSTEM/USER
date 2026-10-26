@@ -1,6 +1,6 @@
 # Backends API
 
-Financial management backend API built with **NestJS 11**, **Drizzle ORM** (PostgreSQL), **Redis**, and **JWT authentication**.
+Financial management backend API built with **NestJS 11**, **Prisma ORM** (PostgreSQL), **Redis**, and **JWT authentication**.
 
 ## Quick Start
 
@@ -31,8 +31,8 @@ src/
 ├── app.controller.ts                # Health check
 ├── app.service.ts
 ├── database/
-│   ├── database.module.ts           # @Global Drizzle provider
-│   └── schema.ts                    # Drizzle schema (all tables, enums)
+│   ├── database.module.ts           # @Global PrismaService provider
+│   └── prisma.service.ts            # PrismaClient + pg adapter + connect retry
 ├── features/                        # Feature modules
 │   ├── auth/                        # Register, login, OAuth, password reset
 │   ├── user/                        # User CRUD, detail, admin operations
@@ -76,7 +76,7 @@ src/
 | `npm test` | Jest unit tests |
 | `npm run test:cov` | Jest with coverage |
 | `npm run test:e2e` | Jest e2e tests |
-| `bun run db:generate` | Generate Drizzle migration |
+| `bun run db:generate` | Generate the Prisma client (`prisma/schema.prisma` → `src/generated/prisma`) |
 | `bun run db:migrate` | Apply pending migrations |
 | `bun run db:push` | Push schema directly (dev) |
 | `bun run compose:up` | Docker Compose up (Postgres + Redis) |
@@ -228,7 +228,7 @@ Authorization: Bearer <access_token>
 ## Key Architecture Decisions
 
 - **Validation**: Zod v4 schemas in `src/packages/entities/{domain}/` with `ZodValidationPipe`
-- **ORM**: Drizzle ORM with `postgres.js` driver (injection token `'DRIZZLE'`)
+- **ORM**: Prisma 7 with `@prisma/adapter-pg` (inject `PrismaService`)
 - **Auth**: Global `JwtAuthGuard` with `@Public()` bypass; separate access/refresh tokens
 - **Balance**: Atomic wallet balance updates via `db.transaction()` (BEGIN/COMMIT)
 - **Response**: Global interceptor enforces `{ statusCode, message, data, timestamp, method, path }`
