@@ -9,15 +9,12 @@ import { ServiceUnavailableException } from '@nestjs/common';
 
 type Row = { id: string; isActive: boolean }[];
 
-/** Minimal drizzle chain: select().from().where().limit() resolves to `rows`. */
+/** Minimal PrismaService: `user.findUnique()` resolves to the first of `rows` (or null). */
 function makeDb(rows: Row | Error) {
-  const limit = jest.fn(() =>
-    rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows),
+  const findUnique = jest.fn(() =>
+    rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows[0] ?? null),
   );
-  const where = jest.fn(() => ({ limit }));
-  const from = jest.fn(() => ({ where }));
-  const select = jest.fn(() => ({ from }));
-  return { db: { select }, select, from, where, limit };
+  return { db: { user: { findUnique } }, findUnique };
 }
 
 function makeContext(headers: Record<string, string | undefined>, isPublic = false) {
@@ -85,7 +82,7 @@ describe('JwtAuthGuard', () => {
       const { guard, database } = build({ isPublic: true });
       const { ctx } = makeContext({});
       await expect(guard.canActivate(ctx)).resolves.toBe(true);
-      expect(database.select).not.toHaveBeenCalled();
+      expect(database.findUnique).not.toHaveBeenCalled();
     });
 
     it('reads the public flag from both handler and class metadata', async () => {
@@ -112,7 +109,7 @@ describe('JwtAuthGuard', () => {
       const { guard, database } = build({});
       const { ctx } = makeContext(headers);
       await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
-      expect(database.select).not.toHaveBeenCalled();
+      expect(database.findUnique).not.toHaveBeenCalled();
     });
 
     it('rejects when neither JWT_ACCESS_SECRET nor JWT_SECRET is configured', async () => {
@@ -146,7 +143,7 @@ describe('JwtAuthGuard', () => {
       const { guard, database } = build({});
       const { ctx } = makeContext(bearer(signToken(validPayload, 'wrong-secret')));
       await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
-      expect(database.select).not.toHaveBeenCalled();
+      expect(database.findUnique).not.toHaveBeenCalled();
     });
 
     it('rejects an expired token', async () => {
@@ -169,7 +166,7 @@ describe('JwtAuthGuard', () => {
       const { guard, database } = build({});
       const { ctx } = makeContext(bearer(signToken({ ...validPayload, typ: 'refresh' })));
       await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
-      expect(database.select).not.toHaveBeenCalled();
+      expect(database.findUnique).not.toHaveBeenCalled();
     });
 
     it('rejects a token without sub', async () => {
@@ -240,8 +237,11 @@ describe('JwtAuthGuard', () => {
         role: 'STUDENT',
         sid: SID,
       });
-      expect(database.select).toHaveBeenCalledTimes(1);
-      expect(database.limit).toHaveBeenCalledWith(1);
+      expect(database.findUnique).toHaveBeenCalledTimes(1);
+      expect(database.findUnique).toHaveBeenCalledWith({
+        where: { id: USER_ID },
+        select: { id: true, isActive: true },
+      });
     });
 
     it('rejects when the user row no longer exists', async () => {
@@ -286,7 +286,7 @@ describe('JwtAuthGuard', () => {
         expect.any(Number),
         expect.any(Number),
       );
-      expect(database.select).not.toHaveBeenCalled();
+      expect(database.findUnique).not.toHaveBeenCalled();
     });
 
     it('rejects a legacy token that carries no sid', async () => {

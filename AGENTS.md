@@ -30,7 +30,7 @@ bun scripts/recreate-db.ts   # Drop → push schema → seed 3 accounts
 | `bun run test:e2e` | Jest with `test/jest-e2e.json` config (only if Node is available — Bun cannot run Jest 29). |
 | `bun run test:cov` | Bun test with `--coverage` (`c8`-backed). |
 | `bun run db:push` | Push schema directly (dev only — skips migration review). |
-| `bun run db:seed:user` / `bun run db:seed:users-bulk` | Bun scripts, not Drizzle. |
+| `bun run db:seed:user` / `bun run db:seed:users-bulk` | Bun scripts using Prisma directly (`scripts/lib/prisma.ts`). |
 
 ## Architecture
 
@@ -38,7 +38,7 @@ bun scripts/recreate-db.ts   # Drop → push schema → seed 3 accounts
 - **Global JWT guard** via `APP_GUARD` in `app.module.ts`. Use `@Public()` to bypass.
 - **Response shape** enforced by `ResponseInterceptor`: `{ statusCode, message, data, timestamp, method, path }`.
 - **Validation**: Zod v4 schemas in `src/packages/entities/{domain}/{domain}.schema.ts`, DTO types in `*.dto.ts`. Used via `ZodValidationPipe`.
-- **Database**: Drizzle ORM (`postgres.js` driver). Single schema file `src/database/schema.ts`. Drizzle injection token is the string `'DRIZZLE'`.
+- **Database**: Prisma 7 (`@prisma/adapter-pg`). Schema mapping in `prisma/schema.prisma`; generated client in `src/generated/prisma`. Inject `PrismaService` (migrations are still owned by `../gateway`).
 - **Repository pattern is optional**: `category`, `wallet`, `transaction` have repositories; `auth`, `user` do not.
 
 ## Imports
@@ -48,7 +48,7 @@ bun scripts/recreate-db.ts   # Drop → push schema → seed 3 accounts
 import { Public } from '@packages/decorators';
 
 // Relative imports within features (no alias):
-import { DRIZZLE } from '../../database/database.module';
+import { PrismaService } from '../../database/database.module';
 ```
 
 Only `@packages/*` is aliased. Do not create new aliases.
@@ -88,14 +88,13 @@ Only `@packages/*` is aliased. Do not create new aliases.
 - Persistent volume `postgres_data` for DB.
 - Healthcheck on Postgres container (used by no other service, but available).
 
-## Drizzle migrations
+## Prisma client
 
 ```bash
-bun run db:generate   # After editing src/database/schema.ts
-bun run db:migrate    # Apply to DB
+bun run db:generate   # prisma generate → src/generated/prisma (also runs on postinstall/build)
 ```
 
-Migrations land in `drizzle/`. Drizzle config in `drizzle.config.ts` duplicates the URL resolution logic from `DatabaseModule`.
+This repo applies no migrations — the shared DB is migrated from `../gateway`; `prisma/schema.prisma` only maps `users`/`grades`.
 
 ## Skills (`.opencode/skills/`)
 
@@ -108,4 +107,3 @@ Migrations land in `drizzle/`. Drizzle config in `drizzle.config.ts` duplicates 
 | `module-consistency` | Ensure controller, service, repository, module stay in sync |
 | `feature-patterns` | Write new feature or modify existing — full layer-by-layer conventions |
 
-**Note**: `drizzle-kit push` requires `--force` in non-interactive shells (CI, scripts) to skip the TTY confirmation prompt.

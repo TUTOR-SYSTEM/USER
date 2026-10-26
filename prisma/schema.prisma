@@ -1,0 +1,77 @@
+// Mirror of the USER-owned tables (users, grades) in the shared Postgres DB.
+// Table/column names map 1:1 onto the existing database (originally created by gateway's drizzle
+// migrations), so `prisma generate` is all that is needed — no migration is applied from here.
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  STUDENT
+  ADMIN
+  TUTOR
+  PARENT
+
+  @@map("user_role")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+
+  @@map("gender")
+}
+
+model User {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String    @unique @db.VarChar(255)
+  username      String    @unique @db.VarChar(50)
+  firstName     String    @map("first_name") @db.VarChar(255)
+  lastName      String    @map("last_name") @db.VarChar(255)
+  password      String
+  avatar        String?
+  phone         String?   @db.VarChar(20)
+  isActive      Boolean?  @default(true) @map("is_active")
+  emailVerified Boolean   @default(false) @map("email_verified")
+  role          UserRole? @default(STUDENT)
+  description   String?   @db.VarChar(5000)
+  userCode      String?   @map("userCode") @db.VarChar(6)
+  gender        Gender?
+  dateOfBirth   DateTime? @map("date_of_birth") @db.Timestamp(6)
+  address       String?
+  district      String?   @db.VarChar(30)
+  province      String?   @db.VarChar(30)
+  subjects      String?   @db.VarChar(255)
+  facebookId    String?   @map("facebookUrl") @db.VarChar(200)
+  googleId      String?   @map("googleUrl") @db.VarChar(200)
+  school        String?   @db.VarChar(255)
+  relationship  String?   @db.VarChar(50)
+  gradesId      String[]  @default([]) @map("grades_id") @db.Uuid
+  parentId      String?   @map("parent_id") @db.Uuid
+  tutorId       String?   @map("tutor_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  parent   User?  @relation("UserParent", fields: [parentId], references: [id], onDelete: Cascade)
+  children User[] @relation("UserParent")
+  tutor    User?  @relation("UserTutor", fields: [tutorId], references: [id], onDelete: Cascade)
+  tutees   User[] @relation("UserTutor")
+
+  @@map("users")
+}
+
+model Grade {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.VarChar(50)
+  level     Int      @unique
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  @@map("grades")
+}

@@ -6,7 +6,7 @@ model: sonnet
 ---
 
 You are the **Dev agent** for a NestJS 11 + TypeScript education/tutoring backend
-(PostgreSQL via Drizzle ORM, RabbitMQ RPC to sibling services, Zod v4 validation, Passport JWT).
+(PostgreSQL via Prisma ORM, RabbitMQ RPC to sibling services, Zod v4 validation, Passport JWT).
 No direct Redis connection lives in this repo — Redis is third-service's, reached here only
 via `RmqProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` patterns.
 
@@ -55,7 +55,7 @@ via `RmqProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` patte
 ## How you work
 - Layering: `{name}.controller.ts` → `{name}.service.ts` → `{name}.repository.ts` +
   `{name}.module.ts`. Controllers only read `@CurrentUser()` and delegate; repositories hold
-  all Drizzle access.
+  all Prisma access (`PrismaService`).
 - Entities live in `src/packages/entities/{domain}/` (`{domain}.schema.ts` Zod,
   `{domain}.dto.ts` inferred types, `index.ts` barrel). Validate every body/query with
   `new ZodValidationPipe<Dto>(schema)`.
@@ -71,11 +71,10 @@ via `RmqProducer` calls to its generic `redis.get`/`redis.set`/`redis.del` patte
   strings in exceptions. Success strings also go in `SUCCESS_MESSAGES` or inline for one-offs.
 
 ## Database
-- Canonical schema is `../gateway/src/database/schema.ts`; `src/database/schema.ts` is a
-  verbatim mirror of its `users`/`grades` (import via `@packages/database/schema`). Edit gateway
-  first, run `bun run db:generate` in gateway, copy the change into the mirror, then tell the
-  user to run `bun run db:migrate` (or `db:push`) from gateway. Never hand-edit `drizzle/`.
-  Never run destructive DB commands.
+- `prisma/schema.prisma` maps the `users`/`grades` tables; the DB itself is still migrated from
+  `../gateway`. Change gateway's schema/migration first, mirror it in `prisma/schema.prisma`, run
+  `bun run db:generate`, then tell the user to run `db:migrate` (or `db:push`) from gateway.
+  Never run `prisma db push`/`migrate` here and never run destructive DB commands.
 - Never read/print/edit `.env*` files.
 
 ## Before finishing

@@ -75,10 +75,11 @@ export class AdminService {
 
   private async getStudentDetail(id: string) {
     this.assertUuid(id);
-    const { parentId, ...row } = (await this.adminRepository.findStudentDetail(id)) ?? {};
-    if (!row.id) {
+    const detail = await this.adminRepository.findStudentDetail(id);
+    if (!detail) {
       throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     }
+    const { parentId, ...row } = detail;
 
     const parent = parentId ? await this.adminRepository.findParentInfo(parentId) : null;
     return { ...this.mapRow(row), parent };

@@ -54,9 +54,9 @@ async function main(): Promise<void> {
 
   await sql.end({ timeout: 5 });
 
-  // Push schema via drizzle-kit
-  console.log('\nPushing schema via drizzle-kit…');
-  execSync('bun x drizzle-kit push --config=drizzle.config.ts --force', {
+  // Push schema via prisma
+  console.log('\nPushing schema via prisma…');
+  execSync('bun x prisma db push --accept-data-loss', {
     stdio: 'inherit',
   });
 

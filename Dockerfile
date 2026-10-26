@@ -7,7 +7,9 @@ WORKDIR /app
 ENV npm_config_fetch_retries=5 \
     npm_config_fetch_retry_mintimeout=20000 \
     npm_config_fetch_retry_maxtimeout=120000
-COPY package.json package-lock.json ./
+# prisma/ + prisma.config.ts are needed here: the `postinstall` hook runs `prisma generate`.
+COPY package.json package-lock.json prisma.config.ts ./
+COPY prisma ./prisma
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --legacy-peer-deps --no-audit --no-fund
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./

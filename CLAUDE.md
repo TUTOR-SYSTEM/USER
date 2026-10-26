@@ -5,7 +5,7 @@
 **Identity/admin** microservice of a tutoring-platform backend split into 4 independent NestJS
 services: `gateway` (HTTP-facing), `user` (this repo — auth/user/admin/student), `tutor-service`
 (education domain), `third-service` (notification/email/upload). Built with **NestJS 11** +
-**TypeScript**, **PostgreSQL** (Drizzle ORM). This is the only service `gateway` actually calls
+**TypeScript**, **PostgreSQL** (Prisma ORM). This is the only service `gateway` actually calls
 today — its `auth`/`user`/`admin`/`student` RPC handlers are live and working end-to-end.
 
 This repo previously described a personal-finance app ("My Finance Tracker" —
@@ -23,7 +23,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 1. Read `CLAUDE.md` and `.claude/rules/*.md` for conventions
 2. Read the specific feature module: `src/features/{name}/*`
 3. Read related entities: `src/packages/entities/{name}/*`
-4. Read database schema only if modifying tables: `../gateway/src/database/schema.ts` (canonical) — `src/database/schema.ts` is a verbatim local mirror of its `users`/`grades`, keep in sync
+4. Read database schema only if modifying tables: `prisma/schema.prisma` (this repo's Prisma mapping of `users`/`grades`); the DB itself is still migrated from `../gateway`
 5. Read `app.module.ts` only when registering new modules
 6. If the feature is reached from `gateway`, read the matching `*.rpc.controller.ts` here to
    see the actual `@MessagePattern` contract, and cross-check against `gateway`'s
@@ -43,7 +43,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 ### Files to read ONLY when necessary:
 - `src/main.ts` — Only when changing bootstrap or the RMQ listener setup
 - `src/app.module.ts` — Only when adding/removing modules
-- `../gateway/src/database/schema.ts` — Only when modifying database schema (canonical since 2026-09-28; mirrored locally in `src/database/schema.ts` since 2026-10-05)
+- `prisma/schema.prisma` — Only when modifying database schema (must stay in sync with the tables migrated from `../gateway`)
 - `src/packages/helpers/*` — Only when using specific helpers
 - `src/data/constants/*` — Only when adding error/success messages
 
@@ -53,7 +53,7 @@ files were kept in sync with this; this `CLAUDE.md` was not, until now.
 | ---------------- | --------------------------------------------------------- |
 | Framework        | NestJS 11                                                |
 | Language         | TypeScript 5 (strictNullChecks only)                     |
-| Database         | PostgreSQL via Drizzle ORM — only `users` + `grades` tables live |
+| Database         | PostgreSQL via Prisma 7 (`@prisma/adapter-pg`, generated client in `src/generated/prisma`) — only `users` + `grades` models live |
 | Inter-service    | RabbitMQ RPC (`@nestjs/microservices`, RMQ transport) — the only service with live `@MessagePattern` responders (`auth`/`user`/`admin`/`student`), reached by `gateway`'s `USER_SERVICE` client on `user_queue`. Calls `tutor-service`/`third-service` via `RmqProducer` (`src/features/rabbitmq/`). |
 | Authentication   | Passport JWT (access + refresh) — token issuance lives here; `gateway` verifies locally and calls back here to confirm the user exists |
 | Validation       | Zod v4 (via custom `ZodValidationPipe`)                  |
@@ -86,9 +86,14 @@ bun run test:cov          # Unit tests with coverage
 bun run test:e2e          # E2E tests
 bun run test:debug        # Debug tests with inspect
 
-# Database (Drizzle) — schema + migrations now live in ../gateway (2026-09-28 consolidation).
-# This repo has no local db:generate/db:migrate/db:push/db:studio anymore; run those from
-# gateway. See `.claude/rules/database.md`.
+# Database (Prisma) — prisma/schema.prisma maps onto the existing users/grades tables.
+bun run db:generate       # prisma generate → src/generated/prisma (gitignored; also runs on
+                          # postinstall and as part of `bun run build`)
+bun run db:validate       # prisma validate
+bun run db:pull           # prisma db pull — re-introspect the shared DB
+bun run db:studio         # Prisma Studio
+# This repo applies NO migrations: the shared DB schema is still created/migrated from ../gateway.
+# See `.claude/rules/database.md`.
 
 # Database Seeds (scripts/*.ts, Bun runtime)
 bun run db:seed:user / users-bulk / grades
@@ -106,7 +111,7 @@ bun podman:up / podman:down / podman:logs
 ## Project Structure
 
 Gotchas:
-- `database/schema.ts` is a verbatim mirror of gateway's users/grades. Gateway stays canonical and owns migrations; the mirror lets Docker builds run without `../gateway`. Import via `@packages/database/schema`.
+- `prisma/schema.prisma` maps the existing `users`/`grades` tables (no migrations here — gateway owns them). Repositories inject `PrismaService` (`src/database/prisma.service.ts`, exported from `database.module.ts`) and use `this.db.user` / `this.db.grade`; types come from `src/generated/prisma/client`.
 - Each feature is an HTTP controller + `*.rpc.controller.ts` (the `@MessagePattern` responder) + service. `admin` is generic managed-user CRUD (`/admin/students`, `/admin/tutors`); `student` covers parent linking and profile.
 - `features/rabbitmq/` is a copy of gateway's RmqModule, used for outbound RPC to tutor-service and third-service.
 
@@ -123,7 +128,7 @@ PostToolUse hook.
 
 1. Request → Global `JwtAuthGuard` (unless `@Public()`)
 2. Controller validates body via `ZodValidationPipe`
-3. Service → Repository → Drizzle ORM → PostgreSQL
+3. Service → Repository → Prisma (`PrismaService`) → PostgreSQL
 4. `ResponseInterceptor` wraps the response the same way for both the HTTP controller and the
    RPC controller's underlying service call.
 5. Errors handled by `ErrorInterceptor` + `HttpExceptionFilter` (HTTP) or `RpcExceptionFilter`
@@ -168,7 +173,7 @@ that would need them were removed (see `auth.service.ts` comments). Don't add th
 Configured in `.claude/settings.json` (scripts in `.claude/hooks/`):
 
 - **PreToolUse (Write|Edit)** → `guard-paths.mjs` blocks edits to `.env*` and generated
-  `drizzle/**` files.
+  `drizzle/**` files (legacy).
 - **PostToolUse (Write|Edit)** → `format-ts.mjs` runs prettier + eslint `--fix` on the
   touched `.ts/.js` file.
 - **Stop** → `review-skills.mjs` runs after each task that changed `src/`, and asks Claude to

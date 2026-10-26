@@ -1,7 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ERROR_MESSAGES } from 'src/data/constants';
-import { DRIZZLE } from 'src/database/database.module';
 import { StudentService } from 'src/features/student/student.service';
 import { StudentRepository } from 'src/features/student/student.repository';
 import { generateCode, generateRandomPassword, hashData } from '@packages/helpers';
@@ -31,14 +30,10 @@ const PARENT_ID = '44444444-4444-4444-8444-444444444444';
 
 type DbRows = { id: string }[];
 
-/** drizzle chain used by generateUsernameFromName: select().from().where().limit() */
-function makeDb(usernameRowsPerCall: DbRows[] = []) {
+/** `usernameExists` answers per call: a non-empty entry means that candidate is taken. */
+function makeUsernameExists(usernameRowsPerCall: DbRows[] = []) {
   const queue = [...usernameRowsPerCall];
-  const limit = jest.fn(async () => queue.shift() ?? []);
-  const where = jest.fn(() => ({ limit }));
-  const from = jest.fn(() => ({ where }));
-  const select = jest.fn(() => ({ from }));
-  return { select, from, where, limit };
+  return jest.fn(async () => (queue.shift() ?? []).length > 0);
 }
 
 describe('StudentService', () => {
@@ -53,14 +48,13 @@ describe('StudentService', () => {
     updateParent: jest.Mock;
     findParentById: jest.Mock;
     delete: jest.Mock;
+    usernameExists: jest.Mock;
   };
-  let db: ReturnType<typeof makeDb>;
 
   const build = async (usernameRows: DbRows[] = []) => {
     // create() generates the student's default password first, then the parent's.
     mockedRandomPassword.mockReset();
     mockedRandomPassword.mockReturnValueOnce('Student@123456').mockReturnValueOnce('Parent@123456');
-    db = makeDb(usernameRows);
     repo = {
       getStudentByField: jest.fn().mockResolvedValue(undefined),
       createParent: jest.fn().mockImplementation(async (d) => ({ ...d, id: d.id })),
@@ -71,13 +65,10 @@ describe('StudentService', () => {
       updateParent: jest.fn(),
       findParentById: jest.fn(),
       delete: jest.fn(),
+      usernameExists: makeUsernameExists(usernameRows),
     };
     const moduleRef = await Test.createTestingModule({
-      providers: [
-        StudentService,
-        { provide: StudentRepository, useValue: repo },
-        { provide: DRIZZLE, useValue: db },
-      ],
+      providers: [StudentService, { provide: StudentRepository, useValue: repo }],
     }).compile();
     service = moduleRef.get(StudentService);
   };
@@ -884,7 +875,11 @@ describe('StudentService', () => {
       repo.findById.mockResolvedValue({ id: STUDENT_ID, parentId: null, tutorId: TUTOR.id });
       repo.findParentById.mockResolvedValue(parentRow);
       repo.update.mockImplementation(async ({ data }) => ({ id: STUDENT_ID, ...data }));
-      const result = await service.update(STUDENT_ID, { parentId: PARENT_ID } as never, ADMIN_ACTOR);
+      const result = await service.update(
+        STUDENT_ID,
+        { parentId: PARENT_ID } as never,
+        ADMIN_ACTOR,
+      );
       expect(repo.update).toHaveBeenCalledWith({ id: STUDENT_ID, data: { parentId: PARENT_ID } });
       expect(repo.updateParent).not.toHaveBeenCalled();
       expect(repo.createParent).not.toHaveBeenCalled();

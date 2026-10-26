@@ -1,21 +1,25 @@
 # Rule: Database & migrations
 
-- **2026-09-28 schema consolidation**: `drizzle.config.ts` + `drizzle/` no longer live in this
-  repo — they moved to `../gateway`, which is the canonical owner of the schema + migration
-  tooling for the shared Postgres DB (`../gateway/src/database/schema.ts`).
-- **2026-10-05 local mirror (for Docker)**: the `@tutor/gateway` (`file:../gateway`) dependency
-  was dropped because the Docker build context has no `../gateway`. Instead
-  `src/database/schema.ts` is a **verbatim copy** of gateway's `users` + `grades` tables and the
-  `userRoleEnum`/`genderEnum` enums, imported via the `@packages/database/*` tsconfig alias:
-  `import { users } from '@packages/database/schema'` (`database.module.ts` uses
-  `import * as schema from './schema'`). Never hand-edit the mirror to diverge from gateway —
-  a hand-written divergent copy (wrong column names/nullability, missing `gradesId`) broke the
-  build with 19 type errors and would have mismatched the real DB.
-- **To change a table/enum**: edit `../gateway/src/database/schema.ts`, run
-  `bun run db:generate` in `gateway` (never here — no local `drizzle.config.ts`/`drizzle-kit`),
-  then copy the changed `users`/`grades`/enum definitions into `src/database/schema.ts`. Tell the
-  user to run `bun run db:migrate` (or `bun run db:push` for dev) from `gateway`. Do not run
-  destructive DB commands automatically.
+- **2026-10 Drizzle → Prisma**: the data layer uses Prisma 7 (engine-less, `@prisma/adapter-pg`).
+  `prisma/schema.prisma` maps the existing `users` / `grades` tables and the `user_role` /
+  `gender` enums 1:1 (`@@map`/`@map` keep the snake_case column names, including the odd
+  `"userCode"`, `"facebookUrl"`, `"googleUrl"` ones). `prisma.config.ts` resolves the URL
+  (`DATABASE_URL`, else `POSTGRES_*`). The client is generated into `src/generated/prisma`
+  (gitignored) by `prisma generate`, which runs on `postinstall` and in `bun run build`.
+- **Migrations are NOT applied from this repo.** The shared DB is still created/migrated from
+  `../gateway` (the old `drizzle.config.ts` + `drizzle/` live there). To change a table/enum:
+  change gateway's schema + migration, then mirror the change in `prisma/schema.prisma` (or run
+  `bun run db:pull` against the migrated DB and review the diff), `bun run db:generate`, and fix
+  the repositories. Do not run `prisma db push` / `migrate` against the shared DB.
+- **Access pattern**: inject `PrismaService` (from `database.module.ts`, global) into the
+  repository — no `@Inject(DRIZZLE)`. Use `select` objects (`satisfies Prisma.UserSelect`) for
+  projections that must hide `password`. Role-scoped writes use `updateMany`/`deleteMany`
+  (Prisma `update`/`delete` need a unique where), then re-read if the row is needed; `update`
+  on a missing row throws `P2025`, which repositories turn into `null`.
+- **Error mapping**: `ErrorInterceptor` maps Prisma codes `P2002`/`P2003`/`P2011` (and raw pg
+  `23505`/`23503`/`23502`) to friendly messages and hides `Invalid \`prisma.…\`` text.
+- **Tests**: mock `PrismaService` with `makePrismaMock()` (`test/support/prisma-mock.ts`); jest
+  needs the `.js`-specifier mapper in `jest.config.js` for the generated client.
 - **Builds must fail loudly**: keep `"build": "nest build"` and the Dockerfile's
   `RUN npm run build && ...` — masking errors (`|| exit 0`, `;`) makes Docker fail later with the
   misleading `COPY failed: stat app/dist: file does not exist`.
@@ -24,16 +28,13 @@
   `esModuleInterop` errors). The image installs with `npm ci --legacy-peer-deps`, which skips
   peer deps — so a runtime-required peer (e.g. `passport` for `@nestjs/passport`) must be listed
   explicitly in `dependencies`.
-- All tables use UUID primary keys (`.defaultRandom()`), snake_case column names mapped from
-  camelCase TS properties, and `created_at` / `updated_at` timestamps.
-- Declare enums as `pgEnum('name', [...])` at the top of `schema.ts` before the tables use them.
-- When a where-condition is built conditionally across `if`/`else` branches (e.g. role-based list
-  scoping) rather than in one expression, annotate the accumulator explicitly as
-  `let scopeWhere: SQL | undefined;` (import `type SQL` from `drizzle-orm`). An untyped `let`
-  defaults to implicit `any`, which then makes any `conditions` array holding it `any[]` and
-  trips `@typescript-eslint/no-unsafe-argument` the moment it's spread into `and(...conditions)`.
-  See `UserRepository.buildUserListConditions` or `AdminRepository`'s list method for the
-  reference shape.
+- All tables use UUID primary keys (`@default(dbgenerated("gen_random_uuid()")) @db.Uuid`),
+  snake_case column names mapped from camelCase fields (`@map`), and `created_at` /
+  `updated_at` timestamps. Enums are declared as `enum … { @@map("db_name") }`.
+- Build conditional where-clauses as `Prisma.UserWhereInput` (`import type { Prisma } from
+  '…/generated/prisma/client'`): collect `conditions: Prisma.UserWhereInput[]` and return `{ AND:
+  conditions }` (or the single item / `undefined`). Case-insensitive search is `{ contains,
+  mode: 'insensitive' }`. See `UserRepository.buildUserListConditions` or `AdminRepository.list`.
 - **2026-09-12 schema trim**: `schema.ts` was cut down to just `users` + `grades` — the
   education-scheduling tables (`classes`, `class_students`, `schedules`, `class_sessions`,
   `curriculums`, `chapters`, `lessons`, `tuitions`, `notifications`, `student_scores`,

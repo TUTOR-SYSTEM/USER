@@ -7,11 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ERROR_MESSAGES } from 'src/data/constants';
-import { Inject } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { DRIZZLE } from '../../database/database.module';
-import { users } from '@packages/database/schema';
+import type { Prisma } from '../../generated/prisma/client';
 import type {
   CreateStudentDto,
   GetStudentsQueryDto,
@@ -54,11 +50,7 @@ function assertCanManage(actor: UserActor, student: { tutorId: string | null }):
 @Injectable()
 export class StudentService {
   private readonly logger = new Logger(StudentService.name);
-  constructor(
-    private readonly repo: StudentRepository,
-    @Inject(DRIZZLE)
-    private readonly db: ReturnType<typeof drizzle>,
-  ) {}
+  constructor(private readonly repo: StudentRepository) {}
 
   // TODO: generate unique code ...
   private async generateUniqueCode(): Promise<string> {
@@ -101,12 +93,7 @@ export class StudentService {
 
     for (let i = 0; i < 10; i++) {
       const candidate = i === 0 ? base : `${base}_${i}`;
-      const [existing] = await this.db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.username, candidate))
-        .limit(1);
-      if (!existing) return candidate;
+      if (!(await this.repo.usernameExists(candidate))) return candidate;
     }
 
     throw new ConflictException(
@@ -307,7 +294,7 @@ export class StudentService {
     assertCanManage(actor, student);
 
     // ── student fields ──
-    const studentUpdate: Partial<typeof users.$inferInsert> = {};
+    const studentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
     if (dto.studentName !== undefined) {
       const { firstName, lastName } = this.splitName(dto.studentName);
       studentUpdate.firstName = firstName;
@@ -345,7 +332,7 @@ export class StudentService {
       updated = (await this.repo.update({ id, data: { parentId: existingParent.id } })) ?? student;
     } else if (hasParentField) {
       if (student.parentId) {
-        const parentUpdate: Partial<typeof users.$inferInsert> = {};
+        const parentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
         if (dto.parentName !== undefined) {
           const { firstName, lastName } = this.splitName(dto.parentName);
           parentUpdate.firstName = firstName;
