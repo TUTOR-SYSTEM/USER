@@ -54,10 +54,18 @@ async function main(): Promise<void> {
   for (const account of SEED_ACCOUNTS) {
     const existing = await db.user.findFirst({
       where: { email: { equals: account.email, mode: 'insensitive' } },
-      select: { id: true },
+      select: { id: true, userCode: true },
     });
 
     if (existing) {
+      if (account.userCode && existing.userCode !== account.userCode) {
+        await db.user.update({
+          where: { id: existing.id },
+          data: { userCode: account.userCode },
+        });
+        console.log(`Updated userCode (${account.userCode}): ${account.email}`);
+        continue;
+      }
       console.log(`Skipped (already exists): ${account.email}`);
       continue;
     }
@@ -82,6 +90,7 @@ async function main(): Promise<void> {
         lastName: account.lastName,
         password: hashedPassword,
         role: account.role,
+        userCode: account.userCode,
       },
     });
 
