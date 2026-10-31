@@ -43,12 +43,12 @@ import { StudentService } from './student.service';
 @ApiBearerAuth('access-token')
 @UseGuards(RolesGuard)
 @Roles('ADMIN', 'TUTOR')
-@Controller('students')
+@Controller('student')
 export class StudentController {
   constructor(private readonly studentService: StudentService) {}
 
   //TODO: generate unique code controller ...
-  @Get('get-student-code')
+  @Get('generateCode')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'Generate student code for new student ...',
@@ -60,7 +60,7 @@ export class StudentController {
   }
 
   //todo : create new student and parent controller ...
-  @Post()
+  @Post('create')
   @HttpCode(StatusCodes.CREATED)
   @ApiOperation({
     summary: 'Create student',
@@ -133,7 +133,7 @@ export class StudentController {
     return this.studentService.create(dto, actorFrom(currentUser));
   }
 
-  @Get()
+  @Get('findAll')
   @Roles('ADMIN')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'List students', description: 'Get paginated list of students' })
@@ -168,7 +168,7 @@ export class StudentController {
     return this.studentService.findAll(query, actorFrom(user));
   }
 
-  @Get(':id')
+  @Get('findById/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'Get student detail',
@@ -237,7 +237,7 @@ export class StudentController {
     return this.studentService.findById(id, actorFrom(user));
   }
 
-  @Put(':id')
+  @Put('update/:id')
   @Roles('ADMIN')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Update student' })
@@ -284,7 +284,7 @@ export class StudentController {
     return this.studentService.update(id, dto, actorFrom(user));
   }
 
-  @Delete(':id')
+  @Delete('delete/:id')
   @Roles('ADMIN')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Delete student' })

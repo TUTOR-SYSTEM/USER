@@ -44,7 +44,7 @@ export const actorFrom = (user: { id?: string; role?: string }): UserActor => ({
   role: user.role ?? '',
 });
 
-/** Fields only an admin (`PUT /users/:id`) may change — never via self-update (privilege escalation). */
+/** Fields only an admin (`PUT /user/updateUserByAdmin/:id`) may change — never via self-update (privilege escalation). */
 const SELF_UPDATE_RESTRICTED_FIELDS = [
   'email',
   'role',
@@ -164,7 +164,7 @@ export class UserService {
     );
   }
 
-  /** `user.getUsers` / `GET /users`: ADMIN only. Returns `{ users, pagination }` (UI shape). */
+  /** `user.getUsers` / `GET /user/getUsers`: ADMIN only. Returns `{ users, pagination }` (UI shape). */
   async getUsersService(query: GetUsersQueryDto, actor: UserActor): Promise<ManagedUsersListDto> {
     this.assertAdmin(actor);
     const { page, limit } = query;
@@ -239,7 +239,7 @@ export class UserService {
     return users.map((user) => ({ ...user, role: user.role ?? 'STUDENT' }));
   }
 
-  /** ADMIN-only lookup used by `GET /users/get-by-field` and `user.getUserByField`. */
+  /** ADMIN-only lookup used by `GET /user/getUserByField` and `user.getUserByField`. */
   async findUsersByFieldPublic(dto: UserDataFieldDto, actor: UserActor): Promise<PublicUser[]> {
     this.assertAdmin(actor);
     return (await this.getUserByField(dto)).map((user) => omitPassword(user));
@@ -362,7 +362,7 @@ export class UserService {
   }
 
   /**
-   * Admin-only write (`PUT /users/:id`, `user.updateUserByAdmin`). `expectedRole` lets the
+   * Admin-only write (`PUT /user/updateUserByAdmin/:id`, `user.updateUserByAdmin`). `expectedRole` lets the
    * `/admin/tutors` and `/admin/students` surfaces refuse to touch the other role.
    */
   async updateUserService({
@@ -381,8 +381,8 @@ export class UserService {
   }
 
   /**
-   * Self-update (`PUT /users`) or admin edit of a user through the student surface
-   * (`PUT /students/:id`). Only the target themself or an ADMIN may call it. A STUDENT may not
+   * Self-update (`PUT /user/updateUser`) or admin edit of a user through the student surface
+   * (`PUT /student/update/:id`). Only the target themself or an ADMIN may call it. A STUDENT may not
    * change their own `firstName`/`lastName` — only an admin may rename a student.
    */
   async updateOwnProfileService({

@@ -5,7 +5,7 @@ import { newPasswordSchema } from '../auth/password.schema';
  * Admin-managed accounts (TUTOR / STUDENT).
  *
  * The `role` is never taken from the request body — it is forced by the endpoint
- * (`/admin/tutors` → TUTOR, `/admin/students` → STUDENT). These schemas therefore
+ * (`/admin/*Tutor*` → TUTOR, `/admin/*Student*` → STUDENT). These schemas therefore
  * only cover the profile/credential fields the admin may set.
  */
 
@@ -75,7 +75,7 @@ export const updateManagedUserSchema = z
  * Update a STUDENT account — superset of `updateManagedUserSchema` covering the
  * remaining `users` columns relevant to a student profile (address, parent/tutor
  * links, student code). Kept separate from the tutor update schema so widening it
- * never leaks student-only fields onto `/admin/tutors/:id`.
+ * never leaks student-only fields onto `/admin/updateTutor/:id`.
  */
 export const updateManagedStudentSchema = updateManagedUserSchema.extend({
   userCode: z.string().max(6, { message: 'User code must be at most 6 characters' }).optional(),
@@ -86,7 +86,7 @@ export const updateManagedStudentSchema = updateManagedUserSchema.extend({
   tutorId: z.string().uuid({ message: 'tutorId must be uuid' }).nullable().optional(),
 });
 
-/** Paginated list query for `/admin/tutors` and `/admin/students`. */
+/** Paginated list query for `/admin/listTutors` and `/admin/listStudents`. */
 export const listManagedUsersQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),

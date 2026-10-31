@@ -101,9 +101,9 @@ Authorization: Bearer <access_token>
 
 **Public endpoints** (no auth required):
 - `POST /auth/login`
-- `POST /auth/login/user-code`
+- `POST /auth/loginByUserCode`
 - `POST /auth/refresh`
-- `POST /auth/forgot-password`
+- `POST /auth/forgotPassword`
 - `GET /auth/google`
 - `GET /auth/google/callback`
 
@@ -142,25 +142,25 @@ Authorization: Bearer <access_token>
 |--------|------|------|-------------|
 | POST | `/auth/register` | Bearer | Register new user |
 | POST | `/auth/login` | Public | Login with email/password |
-| POST | `/auth/login/user-code` | Public | Login with user code |
+| POST | `/auth/loginByUserCode` | Public | Login with user code |
 | POST | `/auth/refresh` | Public | Refresh tokens |
-| POST | `/auth/forgot-password` | Public | Request password reset |
-| POST | `/auth/reset-password` | Bearer | Reset password |
+| POST | `/auth/forgotPassword` | Public | Request password reset |
+| POST | `/auth/resetPassword` | Bearer | Reset password |
 | GET | `/auth/google` | Public | Google OAuth redirect |
 | GET | `/auth/google/callback` | Public | Google OAuth callback |
 
-### Users (`/users`)
+### Users (`/user`)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/users` | Bearer | List users (paginated) |
-| GET | `/users/detail-user` | Bearer | Get current user detail |
-| GET | `/users/get-by-field` | Bearer | Lookup user by field/value |
-| POST | `/users` | Bearer | Create user (admin) |
-| PUT | `/users` | Bearer | Update current user |
-| PUT | `/users/:id` | Admin | Update any user |
-| PUT | `/users/:id/status` | Admin | Toggle user status |
-| DELETE | `/users/:id` | Admin | Delete user |
+| GET | `/user/getUsers` | Bearer | List users (paginated) |
+| GET | `/user/getDetailUser` | Bearer | Get current user detail |
+| GET | `/user/getUserByField` | Bearer | Lookup user by field/value |
+| POST | `/user/createUser` | Bearer | Create user (admin) |
+| PUT | `/user/updateUser` | Bearer | Update current user |
+| PUT | `/user/updateUserByAdmin/:id` | Admin | Update any user |
+| PUT | `/user/updateStatusUser/:id` | Admin | Toggle user status |
+| DELETE | `/user/deleteUserByAdmin/:id` | Admin | Delete user |
 
 ### Categories (`/categories`)
 
