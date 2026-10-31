@@ -113,7 +113,7 @@ export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
   // ─── Tutors ────────────────────────────────────────────────────────
-  @Post('tutors')
+  @Post('createTutor')
   @HttpCode(StatusCodes.CREATED)
   @ApiOperation({ summary: 'Create tutor', description: 'Create a new TUTOR account (admin only)' })
   @ApiBody({ schema: CREATE_ACCOUNT_BODY_SCHEMA })
@@ -125,7 +125,7 @@ export class AdminController {
     return this.adminService.createTutor(dto, actorFrom(user));
   }
 
-  @Get('tutors')
+  @Get('listTutors')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'List tutors', description: 'Paginated list of tutors (admin only)' })
   @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
@@ -146,7 +146,7 @@ export class AdminController {
     return this.adminService.listTutors(query, actorFrom(user));
   }
 
-  @Get('tutors/:id')
+  @Get('getTutor/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Get tutor detail' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
@@ -156,7 +156,7 @@ export class AdminController {
     return this.adminService.getTutor(id, actorFrom(user));
   }
 
-  @Put('tutors/:id')
+  @Put('updateTutor/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Update tutor' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
@@ -170,7 +170,7 @@ export class AdminController {
     return this.adminService.updateTutor(id, dto, actorFrom(user));
   }
 
-  @Delete('tutors/:id')
+  @Delete('deleteTutor/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Delete tutor' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
@@ -180,7 +180,7 @@ export class AdminController {
   }
 
   // ─── Students ──────────────────────────────────────────────────────
-  @Post('students')
+  @Post('createStudent')
   @HttpCode(StatusCodes.CREATED)
   @ApiOperation({
     summary: 'Create student',
@@ -195,7 +195,7 @@ export class AdminController {
     return this.adminService.createStudent(dto, actorFrom(user));
   }
 
-  @Get('students')
+  @Get('listStudents')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'List students',
@@ -219,7 +219,7 @@ export class AdminController {
     return this.adminService.listStudents(query, actorFrom(user));
   }
 
-  @Get('students/:id')
+  @Get('getStudent/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Get student detail' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
@@ -229,7 +229,7 @@ export class AdminController {
     return this.adminService.getStudent(id, actorFrom(user));
   }
 
-  @Put('students/:id')
+  @Put('updateStudent/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'Update student',
@@ -246,7 +246,7 @@ export class AdminController {
     return this.adminService.updateStudent(id, dto, actorFrom(user));
   }
 
-  @Delete('students/:id')
+  @Delete('deleteStudent/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Delete student' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })

@@ -46,13 +46,13 @@ type GetUsersResponse = Awaited<ReturnType<UserService['getUsersService']>>;
 
 @ApiTags('Users')
 @ApiBearerAuth('access-token')
-@Controller('users')
+@Controller('user')
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @Get()
+  @Get('getUsers')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.GET_USERS_SUCCESSFULLY,
@@ -76,7 +76,7 @@ export class UserController {
     return await this.userService.getUsersService(query, actorFrom(user));
   }
 
-  @Get('/detail-user')
+  @Get('getDetailUser')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.GET_USER_SUCCESSFULLY,
@@ -92,7 +92,7 @@ export class UserController {
 
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @Get('/get-by-field')
+  @Get('getUserByField')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.GET_USER_BY_FIELD_SUCCESSFULLY,
@@ -114,7 +114,7 @@ export class UserController {
 
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @Post()
+  @Post('createUser')
   @HttpCode(StatusCodes.CREATED)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.CREATE_USER_SUCCESSFULLY,
@@ -132,7 +132,7 @@ export class UserController {
     return this.userService.createUserService(createUserDto);
   }
 
-  @Put('')
+  @Put('updateUser')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.UPDATE_USER_SUCCESSFULLY,
@@ -157,7 +157,7 @@ export class UserController {
 
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @Put('/:id')
+  @Put('updateUserByAdmin/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.UPDATE_USER_SUCCESSFULLY,
@@ -184,7 +184,7 @@ export class UserController {
 
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @Put('/:id/status')
+  @Put('updateStatusUser/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.UPDATE_USER_STATUS_SUCCESSFULLY,
@@ -210,7 +210,7 @@ export class UserController {
 
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @Delete('/:id')
+  @Delete('deleteUserByAdmin/:id')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.DELETE_USER_SUCCESSFULLY,
@@ -228,7 +228,7 @@ export class UserController {
     return await this.userService.deleteUserByAdminService({ id: id, actor: actorFrom(user) });
   }
 
-  @Post('change-password')
+  @Post('changePassword')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.CHANGE_PASSWORD_SUCCESSFULLY,

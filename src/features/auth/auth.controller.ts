@@ -129,7 +129,7 @@ export class AuthController {
 
   // TODO : login with usercode ...
   @Public()
-  @Post('login/user-code')
+  @Post('loginByUserCode')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'Login with user code',
@@ -203,7 +203,7 @@ export class AuthController {
   }
 
   @Public()
-  @Post('forgot-password')
+  @Post('forgotPassword')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'Forgot password', description: 'Request a password reset email' })
   @ApiBody({
@@ -226,7 +226,7 @@ export class AuthController {
 
   @Public()
   @ApiBearerAuth('access-token')
-  @Post('/reset-password')
+  @Post('resetPassword')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'Reset password',

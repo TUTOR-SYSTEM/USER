@@ -39,7 +39,7 @@ export const changePasswordSchema = z
     }
   });
 
-/** `PUT /users/:id/status` body — explicit and idempotent (the target state, not a toggle). */
+/** `PUT /user/updateStatusUser/:id` body — explicit and idempotent (the target state, not a toggle). */
 export const updateUserStatusSchema = z
   .object({
     isActive: z.boolean({ message: 'isActive must be true or false ...' }),

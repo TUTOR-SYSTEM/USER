@@ -82,7 +82,7 @@ export type ManagedUserListItem = {
   createdAt: string;
 };
 
-/** Paginated list shape shared by `GET /users` and `user.getUsers` (UI: `ManagedUsersApiPayload`). */
+/** Paginated list shape shared by `GET /user/getUsers` and `user.getUsers` (UI: `ManagedUsersApiPayload`). */
 export type ManagedUsersListDto = {
   users: ManagedUserListItem[];
   pagination: { total: number; page: number; limit: number; totalPages: number };
