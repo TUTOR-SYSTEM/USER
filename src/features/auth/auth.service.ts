@@ -40,14 +40,18 @@ import {
 } from '@packages/helpers';
 import { UserService } from '../user/user.service';
 import { getJwtTokensConfig } from '@packages/configs/jwt-sign.config';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { checkUuidValid } from '@packages/helpers';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
 
-/** How long a forgot-password reset token stays valid — matches the copy in the reset email. */
-const RESET_PASSWORD_TOKEN_TTL_SECONDS = 300;
-const resetPasswordRedisKey = (jti: string) => `reset-password:${jti}`;
+/** How long a password-reset code stays valid — matches the copy in the reset email. */
+const RESET_PASSWORD_OTP_TTL_SECONDS = 300;
+/** Wrong guesses allowed per issued code before it is burned and the user must request a new one. */
+const RESET_PASSWORD_OTP_MAX_ATTEMPTS = 5;
+const resetPasswordOtpRedisKey = (userId: string) => `reset-password-otp:${userId}`;
+const resetPasswordOtpAttemptsRedisKey = (userId: string, codeId: string) =>
+  `reset-password-otp-attempts:${userId}:${codeId}`;
 
 /** How long an email-verification link stays valid. */
 const VERIFY_EMAIL_TOKEN_TTL_SECONDS = 86400;
@@ -71,6 +75,30 @@ const positiveIntOr = (raw: string | undefined, fallback: number): number => {
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
+
+/** Stored behind a reset code. Only the salted hash is kept; `codeId` scopes the attempt counter. */
+type ResetPasswordOtpRecord = { codeId: string; salt: string; hash: string };
+
+function hashResetOtp(salt: string, otp: string): string {
+  return createHash('sha256').update(`${salt}:${otp}`).digest('hex');
+}
+
+function parseResetOtpRecord(raw: string | null): ResetPasswordOtpRecord | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<ResetPasswordOtpRecord>;
+    if (
+      typeof value.codeId === 'string' &&
+      typeof value.salt === 'string' &&
+      typeof value.hash === 'string'
+    ) {
+      return { codeId: value.codeId, salt: value.salt, hash: value.hash };
+    }
+  } catch {
+    // Corrupted record: treated as an expired code.
+  }
+  return null;
+}
 
 /** Payload stored behind a verify-email token: the email is bound so a later change invalidates it. */
 type VerifyEmailToken = { userId: string; email: string };
@@ -156,8 +184,37 @@ export class AuthService {
       return;
     }
     if (Number(failures ?? 0) >= this.loginMaxAttempts) {
-      throw new HttpException(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+      const remainingSeconds = await this.getLoginLockRemainingSeconds(
+        loginFailureRedisKey(identifier),
+      );
+      const minutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+      throw new HttpException(
+        `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: ${minutes} phút`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
+  }
+
+  /**
+   * How long the caller still has to wait before the lock lifts, in seconds. Best effort: Redis
+   * `TTL` returns `-1` (no expiry) / `-2` (key already gone), and an unreachable Redis must not
+   * turn the 429 into a 500, so fall back to the full window.
+   */
+  private async getLoginLockRemainingSeconds(key: string): Promise<number> {
+    try {
+      const ttl = await this.rmqProducer.send<number, { key: string }>(
+        'redis.ttl',
+        { key },
+        REDIS_READ_TIMEOUT_MS,
+        REDIS_READ_RETRIES,
+      );
+      if (Number.isFinite(ttl) && ttl > 0) {
+        return ttl;
+      }
+    } catch (error) {
+      this.logger.warn('Login lockout TTL unavailable', error);
+    }
+    return this.loginAttemptWindowSeconds;
   }
 
   /** Counts one failed sign-in in the window that starts at the first failure (atomic on Redis). */
@@ -441,8 +498,8 @@ export class AuthService {
     return this.issueLoginResponse(await this.findOrCreateOAuthUser(profile));
   }
 
-  // Reset token = a random jti stored in third-service's Redis (userId, 5 min TTL); the email
-  // itself is sent by third-service too. Both hops go over this service's own RabbitMQ producer.
+  // Reset flow = a 6-digit one-time code. Only a salted hash is stored in third-service's Redis
+  // (userId key, 5 min TTL); the plain code exists only in the email third-service sends.
   async forgotPasswordService(
     forgotPasswordDto: ForgotPasswordDto,
   ): Promise<ForgotPasswordResponseDto> {
@@ -453,25 +510,36 @@ export class AuthService {
     // Same response, same timing, whether or not the email exists: the mail is sent in the
     // background so a registered address does not answer more slowly than an unknown one.
     if (user) {
-      this.sendForgotPasswordMail(user).catch((error: unknown) =>
-        this.logger.warn(`Failed to send reset mail to user ${user.id}`, error),
+      this.sendPasswordResetOtp(user).catch((error: unknown) =>
+        this.logger.warn(`Failed to send reset code to user ${user.id}`, error),
       );
     }
 
     return { ok: true };
   }
 
-  private async sendForgotPasswordMail(user: { id: string; email: string; firstName: string }) {
-    const jti = randomUUID();
+  /**
+   * Issues a new code, replacing any previous one (so only the latest email works). The stored
+   * record carries its own `codeId`, so the attempt counter of an old code never affects a new one.
+   */
+  private async sendPasswordResetOtp(user: { id: string; email: string; firstName: string }) {
+    const otp = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    const salt = randomBytes(16).toString('hex');
+    const record: ResetPasswordOtpRecord = {
+      codeId: randomUUID(),
+      salt,
+      hash: hashResetOtp(salt, otp),
+    };
+
     await this.rmqProducer.send('redis.set', {
-      key: resetPasswordRedisKey(jti),
-      value: user.id,
-      ttlSeconds: RESET_PASSWORD_TOKEN_TTL_SECONDS,
+      key: resetPasswordOtpRedisKey(user.id),
+      value: JSON.stringify(record),
+      ttlSeconds: RESET_PASSWORD_OTP_TTL_SECONDS,
     });
 
-    await this.rmqProducer.send('email.sendForgotPasswordMail', {
+    await this.rmqProducer.send('email.sendPasswordResetOtp', {
       to: user.email,
-      resetToken: jti,
+      otp,
       displayName: user.firstName,
     });
   }
@@ -479,15 +547,45 @@ export class AuthService {
   async resetPasswordService(
     resetPasswordDto: ResetPasswordDto,
   ): Promise<ResetPasswordResponseDto> {
-    // The token is consumed by the read itself (GETDEL): of two concurrent resets with the same
-    // jti, only one gets the user id.
-    const userId = await this.redisGetAndDelete(resetPasswordRedisKey(resetPasswordDto.jti));
-    if (!userId) {
-      throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_PASSWORD_TOKEN);
+    const [user] = await this.userService.getUserByField({
+      field: 'email',
+      value: normalizeEmail(resetPasswordDto.email),
+    });
+    // Unknown email and wrong code give the same answer, so the endpoint does not reveal accounts.
+    if (!user) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
     }
 
-    await this.updateUserPasswordService({ userId, password: resetPasswordDto.password });
-    // Replying to the reset mail proves the user controls the mailbox.
+    const key = resetPasswordOtpRedisKey(user.id);
+    const raw = await this.redisGet(key);
+    const record = parseResetOtpRecord(raw);
+    if (!record) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
+    }
+
+    // Count every guess against this code before comparing, so brute force stops after the limit.
+    const attempts = await this.recordResetOtpAttempt(user.id, record.codeId);
+    if (attempts > RESET_PASSWORD_OTP_MAX_ATTEMPTS) {
+      throw new HttpException(
+        ERROR_MESSAGES.RESET_OTP_TOO_MANY_ATTEMPTS,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    if (!safeEqualHex(record.hash, hashResetOtp(record.salt, resetPasswordDto.otp))) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
+    }
+
+    // Single use: GETDEL returns the stored record only to the one request that removes it. If a
+    // newer code replaced it in between, that new code is the one that was just burned.
+    const consumed = await this.redisGetAndDelete(key);
+    if (consumed !== raw) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
+    }
+
+    await this.updateUserPasswordService({ userId: user.id, password: resetPasswordDto.password });
+    const userId = user.id;
+    // Entering the code from the reset email proves the user controls the mailbox.
     await this.userService.setEmailVerifiedService({ id: userId, emailVerified: true });
 
     return { ok: true };
@@ -556,8 +654,34 @@ export class AuthService {
   }
 
   /**
-   * Single-use read (GETDEL) for reset tokens. No retry: a retried call after a lost reply would
-   * find the key already gone. The key is not logged, since it carries the reset token.
+   * Counts one guess against the current reset code (atomic INCR, window = code TTL). Fails closed:
+   * if the counter cannot be updated the guess is refused, since a guess that is not counted could
+   * be brute-forced.
+   */
+  private async recordResetOtpAttempt(userId: string, codeId: string): Promise<number> {
+    try {
+      const { count } = await this.rmqProducer.send<
+        { count: number },
+        { key: string; windowSeconds: number }
+      >(
+        'redis.incr',
+        {
+          key: resetPasswordOtpAttemptsRedisKey(userId, codeId),
+          windowSeconds: RESET_PASSWORD_OTP_TTL_SECONDS,
+        },
+        REDIS_READ_TIMEOUT_MS,
+        0,
+      );
+      return count;
+    } catch (error) {
+      this.logger.warn('Reset code attempt counter unavailable', error);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
+    }
+  }
+
+  /**
+   * Single-use read (GETDEL) for reset codes. No retry: a retried call after a lost reply would
+   * find the key already gone. The value is not logged, since it carries the code's hash.
    */
   private async redisGetAndDelete(key: string): Promise<string | null> {
     try {

@@ -134,11 +134,12 @@ describe('StudentController', () => {
   });
 
   describe('access control', () => {
-    it('is ADMIN or TUTOR at class level and ADMIN-only for list, update and delete', () => {
+    it('is ADMIN or TUTOR at class level; list is ADMIN or TUTOR (scoped to own students), update and delete ADMIN-only', () => {
       expect(Reflect.getMetadata(ROLES_KEY, StudentController)).toEqual(['ADMIN', 'TUTOR']);
       expect(Reflect.getMetadata(GUARDS_METADATA, StudentController)).toContain(RolesGuard);
       expect(Reflect.getMetadata(ROLES_KEY, StudentController.prototype.getAllStudents)).toEqual([
         'ADMIN',
+        'TUTOR',
       ]);
       expect(Reflect.getMetadata(ROLES_KEY, StudentController.prototype.update)).toEqual(['ADMIN']);
       expect(Reflect.getMetadata(ROLES_KEY, StudentController.prototype.delete)).toEqual(['ADMIN']);

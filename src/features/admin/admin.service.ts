@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  HttpStatus,
   NotFoundException,
 } from '@nestjs/common';
 import { ERROR_MESSAGES } from 'src/data/constants';
@@ -90,9 +91,7 @@ export class AdminService {
     if (dto.userCode) {
       const [existing] = await this.adminRepository.findByUserCode(dto.userCode.trim());
       if (existing && existing.id !== id) {
-        throw new ConflictException(
-          `${ERROR_MESSAGES.STUDENT_CODE_EXISTS}: ${dto.userCode.trim()}`,
-        );
+        throw this.fieldConflict('userCode', ERROR_MESSAGES.STUDENT_CODE_EXISTS);
       }
     }
     if (dto.parentId) {
@@ -113,6 +112,19 @@ export class AdminService {
     return this.deleteManagedUser(id, 'STUDENT');
   }
 
+  /**
+   * Duplicate on one field (email / username / userCode). Returned as 400 with `errors[]` so the
+   * FE maps it onto that input, same shape as Zod validation failures. Admin-only endpoints, so
+   * naming the duplicated field is intentional (unlike the public register flow).
+   */
+  private fieldConflict(field: string, message: string): BadRequestException {
+    return new BadRequestException({
+      statusCode: HttpStatus.BAD_REQUEST,
+      message: ERROR_MESSAGES.VALIDATION_FAILED,
+      errors: [{ field, message, code: 'duplicate' }],
+    });
+  }
+
   // ─── Shared implementation ─────────────────────────────────────────
   private async createManagedUser(dto: CreateManagedUserDto, role: ManagedRole) {
     this.logger.log(`Admin creating a ${role} account (${dto.email})`);
@@ -120,7 +132,7 @@ export class AdminService {
     const email = dto.email.trim().toLowerCase();
     const [existingByEmail] = await this.adminRepository.findByEmail(email);
     if (existingByEmail) {
-      throw new ConflictException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
+      throw this.fieldConflict('email', ERROR_MESSAGES.EMAIL_EXISTS);
     }
 
     const username = dto.username?.trim()
@@ -179,14 +191,14 @@ export class AdminService {
       const email = dto.email.trim().toLowerCase();
       const [existing] = await this.adminRepository.findByEmail(email);
       if (existing && existing.id !== id) {
-        throw new ConflictException(`${ERROR_MESSAGES.EMAIL_EXISTS}: ${email}`);
+        throw this.fieldConflict('email', ERROR_MESSAGES.EMAIL_EXISTS);
       }
       dto = { ...dto, email };
     }
     if (dto.username) {
       const [existing] = await this.adminRepository.findByUsername(dto.username.trim());
       if (existing && existing.id !== id) {
-        throw new ConflictException(`${ERROR_MESSAGES.USERNAME_EXISTS}: ${dto.username.trim()}`);
+        throw this.fieldConflict('username', ERROR_MESSAGES.USERNAME_EXISTS);
       }
     }
 
@@ -269,7 +281,7 @@ export class AdminService {
   private async ensureUniqueUsername(username: string): Promise<string> {
     const [existing] = await this.adminRepository.findByUsername(username);
     if (existing) {
-      throw new ConflictException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
+      throw this.fieldConflict('username', ERROR_MESSAGES.USERNAME_EXISTS);
     }
     return username;
   }

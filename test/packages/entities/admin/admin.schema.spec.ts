@@ -43,10 +43,10 @@ describe('createManagedUserSchema', () => {
     ]);
   });
 
-  it('accepts the 8-100 length window with the complexity rules and rejects outside it', () => {
+  it('accepts the 8-20 length window with the complexity rules and rejects outside it', () => {
     expect(messagesFor('Abcdef1!')).toEqual([]);
-    expect(messagesFor(`Abcdef1!${'x'.repeat(92)}`)).toEqual([]);
+    expect(messagesFor(`Abcdef1!${'x'.repeat(12)}`)).toEqual([]);
     expect(messagesFor('Abc1!')).toEqual(['AUTH_PASSWORD_MIN']);
-    expect(messagesFor(`Abcdef1!${'x'.repeat(93)}`)).toEqual(['AUTH_PASSWORD_MAX']);
+    expect(messagesFor(`Abcdef1!${'x'.repeat(13)}`)).toEqual(['MANAGED_PASSWORD_MAX']);
   });
 });

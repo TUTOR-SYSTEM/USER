@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { IS_PUBLIC_KEY } from '@packages/decorators';
-import { PrismaService } from 'src/database/database.module';
+import { PrismaService } from '../../database/database.module';
 import type { Request } from 'express';
 
 import { checkUuidValid, isSessionActive, type JwtUserRole } from '@packages/helpers';

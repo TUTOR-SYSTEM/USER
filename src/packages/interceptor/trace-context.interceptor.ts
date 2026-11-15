@@ -28,7 +28,8 @@ const SENSITIVE_KEYS = [
   'token',
   'accessToken',
   'refreshToken',
-  // Password-reset token (jti) — usable to set a new password until it expires.
+  // Password-reset code — usable to set a new password until it expires.
+  'otp',
   'jti',
   'resetToken',
 ];

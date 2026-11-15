@@ -77,7 +77,7 @@ export const updateGradeSchema = z.object({
  */
 export const updateUserSchema = z
   .object({
-    email: z.string().email({ message: 'Invalid email address' }).optional(),
+    email: z.string().trim().email({ message: 'Invalid email address' }).optional(),
     username: z
       .string()
       .trim()
@@ -96,7 +96,7 @@ export const updateUserSchema = z
       .min(2, { message: 'Last name must be at least 2 characters' })
       .max(100, { message: 'Last name must be at most 100 characters' })
       .optional(),
-    avatar: z.string().url({ message: 'Avatar must be a url ...' }).nullable().optional(),
+    avatar: z.string().url({ message: 'Avatar must be a url ...' }).regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' }).nullable().optional(),
     phone: z
       .string()
       .trim()
@@ -162,6 +162,7 @@ export const updateUserSchema = z
 export const createUserSchema = z.object({
   email: z
     .string({ message: 'Email is required' })
+    .trim()
     .min(1, { message: 'Email is required' })
     .email({ message: 'Invalid email address' }),
   username: z
@@ -184,7 +185,7 @@ export const createUserSchema = z.object({
   phone: z.string().trim().max(20, { message: 'Phone must be at most 20 characters' }).optional(),
   avatar: z
     .string({ message: 'Avatar must be string ...' })
-    .url({ message: 'Avatar must be url ...' })
+    .url({ message: 'Avatar must be url ...' }).regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' })
     .optional(),
   isActive: z.boolean({ message: 'isActive must be true or false ...' }).default(true),
   description: z.string().default(''),

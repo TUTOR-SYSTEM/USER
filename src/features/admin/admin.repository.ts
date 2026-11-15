@@ -130,14 +130,22 @@ export class AdminRepository {
     const where: Prisma.UserWhereInput = { role };
 
     if (search?.trim()) {
-      const contains = { contains: search.trim(), mode: 'insensitive' } as const;
-      where.OR = [
-        { email: contains },
-        { username: contains },
-        { firstName: contains },
-        { lastName: contains },
-        { phone: contains },
-      ];
+      // One OR-group per word: "Gia Su" matches first name "Gia" and last name "Su" separately.
+      where.AND = search
+        .trim()
+        .split(/\s+/)
+        .map((word) => {
+          const contains = { contains: word, mode: 'insensitive' } as const;
+          return {
+            OR: [
+              { email: contains },
+              { username: contains },
+              { firstName: contains },
+              { lastName: contains },
+              { phone: contains },
+            ],
+          };
+        });
     }
     if (isActive !== undefined) {
       where.isActive = isActive;

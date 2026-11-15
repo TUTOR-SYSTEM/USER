@@ -7,7 +7,7 @@ import { DatabaseModule } from './database/database.module';
 import { UserModule } from './features/user/user.module';
 import { AdminModule } from './features/admin/admin.module';
 import { StudentModule } from './features/student/student.module';
-import { JwtAuthGuard, LanguageGuard } from '@packages/guards';
+import { JwtAuthGuard, LanguageGuard } from './packages/guards';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { RmqModule } from './features/rabbitmq/rmq.module';

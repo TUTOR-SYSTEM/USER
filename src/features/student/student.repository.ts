@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { GetStudentsQueryDto } from '@packages/entities/student';
 import { buildListWhereClause } from '@packages/helpers';
-import { PrismaService } from 'src/database/database.module';
+import { PrismaService } from '../../database/database.module';
 import type { Prisma } from 'src/generated/prisma/client';
 
 /** Parent contact columns embedded in each student row of the list. */
@@ -83,6 +83,15 @@ export class StudentRepository {
     return this.db.user.create({ data: { ...data, role: 'PARENT' } });
   }
 
+  /** Học sinh có `parentId` = phụ huynh (role STUDENT). */
+  async findChildrenByParentId({ parentId }: { parentId: string }) {
+    return this.db.user.findMany({
+      where: { parentId, role: 'STUDENT' },
+      select: { id: true, firstName: true, lastName: true, userCode: true, tutorId: true },
+      orderBy: { firstName: 'asc' },
+    });
+  }
+
   async findById({ id }: { id: string }) {
     const row = await this.db.user.findFirst({ where: { id, role: 'STUDENT' } });
     if (!row) return null;
@@ -101,6 +110,10 @@ export class StudentRepository {
   /** Existing PARENT user to link to a student; null when no PARENT has that id. */
   async findParentById({ id }: { id: string }) {
     return this.db.user.findFirst({ where: { id, role: 'PARENT' } });
+  }
+
+  async findTutorById({ id }: { id: string }) {
+    return this.db.user.findFirst({ where: { id, role: 'TUTOR' } });
   }
 
   async updateParent({ id, data }: { id: string; data: Prisma.UserUncheckedUpdateManyInput }) {

@@ -12,7 +12,6 @@ import { clearSessionCache } from 'src/packages/helpers/session-check.helper';
 jest.mock('src/features/user/user.service', () => ({ UserService: class UserService {} }));
 
 const USER_ID = '6f1c2b4e-9d3a-4c7e-8b21-0a1b2c3d4e5f';
-const RESET_JTI = '0b7a6c1e-2f3d-4e5a-9b8c-7d6e5f4a3b2c';
 const EMAIL = 'student@example.test';
 const env: Record<string, string> = {
   JWT_ACCESS_SECRET: 'test-access-secret',
@@ -36,7 +35,7 @@ const user = (overrides: Record<string, unknown> = {}) => ({
 });
 
 /** In-memory third-service stand-in: string keys, GETDEL and INCR semantics as Redis has them. */
-function fakeRmq() {
+function fakeRmq(ttlSeconds = 900) {
   const store = new Map<string, string>();
   const send = jest.fn(async (pattern: string, payload: Record<string, unknown>) => {
     switch (pattern) {
@@ -45,6 +44,8 @@ function fakeRmq() {
         return { ok: true };
       case 'redis.get':
         return store.get(payload.key as string) ?? null;
+      case 'redis.ttl':
+        return ttlSeconds;
       case 'redis.getdel': {
         const value = store.get(payload.key as string) ?? null;
         store.delete(payload.key as string);
@@ -55,6 +56,8 @@ function fakeRmq() {
         store.set(payload.key as string, String(count));
         return { count };
       }
+      case 'email.sendPasswordResetOtp':
+        return { id: 'mail-1' };
       default:
         throw new Error(`unexpected ${pattern}`);
     }
@@ -103,44 +106,83 @@ describe('AuthService atomic reset and per-account lockout', () => {
     );
   };
 
-  describe('reset password (single use)', () => {
-    it('reads and deletes the token with one redis.getdel and never with a separate get/del', async () => {
-      await rmq.send('redis.set', { key: `reset-password:${RESET_JTI}`, value: USER_ID });
-      const service = build();
+  describe('reset password (one-time 6-digit code)', () => {
+    /** Requests a code the way the endpoint does, then reads it from the mail payload. */
+    const issueCode = async (service: AuthService) => {
+      await service.forgotPasswordService({ email: EMAIL });
+      await new Promise((resolve) => setImmediate(resolve));
+      const mail = rmq.send.mock.calls.find(([p]) => p === 'email.sendPasswordResetOtp');
+      return (mail?.[1] as { otp: string }).otp;
+    };
+    const wrongCode = (otp: string) => (otp === '000000' ? '111111' : '000000');
+    const reset = (service: AuthService, otp: string) =>
+      service.resetPasswordService({
+        email: EMAIL,
+        otp,
+        password: 'Abcdef1!',
+        confirmPassword: 'Abcdef1!',
+      } as never);
 
-      await expect(
-        service.resetPasswordService({ jti: RESET_JTI, password: 'Abcdef1!' } as never),
-      ).resolves.toEqual({ ok: true });
+    it('resets the password with the emailed code and removes the code from Redis', async () => {
+      const service = build();
+      const otp = await issueCode(service);
+      expect(otp).toMatch(/^\d{6}$/);
+
+      await expect(reset(service, otp)).resolves.toEqual({ ok: true });
 
       expect(rmq.send).toHaveBeenCalledWith(
         'redis.getdel',
-        { key: `reset-password:${RESET_JTI}` },
+        { key: `reset-password-otp:${USER_ID}` },
         expect.any(Number),
         0,
       );
-      expect(rmq.send).not.toHaveBeenCalledWith(
-        'redis.get',
-        expect.anything(),
-        expect.anything(),
-        expect.anything(),
-      );
-      expect(rmq.emit).not.toHaveBeenCalledWith('redis.del', expect.anything());
-      expect(rmq.store.has(`reset-password:${RESET_JTI}`)).toBe(false);
+      expect(rmq.store.has(`reset-password-otp:${USER_ID}`)).toBe(false);
+      expect(userService.updateUserPasswordService).toHaveBeenCalledTimes(1);
     });
 
-    it('lets exactly one of two concurrent resets with the same token succeed', async () => {
-      await rmq.send('redis.set', { key: `reset-password:${RESET_JTI}`, value: USER_ID });
+    it('lets exactly one of two concurrent resets with the same code succeed', async () => {
       const service = build();
-      const attempt = () =>
-        service.resetPasswordService({ jti: RESET_JTI, password: 'Abcdef1!' } as never);
+      const otp = await issueCode(service);
 
-      const results = await Promise.allSettled([attempt(), attempt()]);
+      const results = await Promise.allSettled([reset(service, otp), reset(service, otp)]);
 
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
       const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
       expect(rejected.reason).toBeInstanceOf(BadRequestException);
-      expect(rejected.reason.message).toBe(ERROR_MESSAGES.INVALID_RESET_PASSWORD_TOKEN);
+      expect(rejected.reason.message).toBe(ERROR_MESSAGES.INVALID_RESET_OTP);
       expect(userService.updateUserPasswordService).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a wrong code without changing the password', async () => {
+      const service = build();
+      const otp = await issueCode(service);
+
+      await expect(reset(service, wrongCode(otp))).rejects.toMatchObject({
+        message: ERROR_MESSAGES.INVALID_RESET_OTP,
+      });
+      expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
+    });
+
+    it('burns the code after 5 wrong guesses, even when the right code comes next', async () => {
+      const service = build();
+      const otp = await issueCode(service);
+
+      for (let i = 0; i < 5; i++) {
+        await expect(reset(service, wrongCode(otp))).rejects.toBeInstanceOf(BadRequestException);
+      }
+
+      expect(await statusOf(reset(service, otp))).toBe(HttpStatus.TOO_MANY_REQUESTS);
+      expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
+    });
+
+    it('invalidates the previous code when a new one is requested', async () => {
+      const service = build();
+      const first = await issueCode(service);
+      const second = await issueCode(service);
+      if (first === second) return; // 1-in-a-million collision: nothing to assert.
+
+      await expect(reset(service, first)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(reset(service, second)).resolves.toEqual({ ok: true });
     });
   });
 
@@ -182,7 +224,36 @@ describe('AuthService atomic reset and per-account lockout', () => {
 
       await expect(
         service.loginService({ email: EMAIL, password: 'correct-password' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS });
+      ).rejects.toMatchObject({
+        message: expect.stringContaining(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS),
+      });
+    });
+
+    it('reports how many minutes remain before the lock lifts', async () => {
+      rmq = fakeRmq(125);
+      const service = build({ LOGIN_MAX_ATTEMPTS: '1' });
+      await wrongPassword(service);
+
+      await expect(
+        service.loginService({ email: EMAIL, password: 'correct-password' }),
+      ).rejects.toMatchObject({
+        message: `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: 3 phút`,
+      });
+    });
+
+    it('falls back to the full window when the TTL cannot be read', async () => {
+      const service = build({ LOGIN_MAX_ATTEMPTS: '1', LOGIN_ATTEMPT_WINDOW_SECONDS: '120' });
+      const real = rmq.send.getMockImplementation()!;
+      rmq.send.mockImplementation((pattern: string, payload: Record<string, unknown>) =>
+        pattern === 'redis.ttl' ? Promise.reject(new Error('timeout')) : real(pattern, payload),
+      );
+      await wrongPassword(service);
+
+      await expect(
+        service.loginService({ email: EMAIL, password: 'correct-password' }),
+      ).rejects.toMatchObject({
+        message: `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: 2 phút`,
+      });
     });
 
     it('clears the counter after a successful sign-in', async () => {
@@ -245,7 +316,9 @@ describe('AuthService atomic reset and per-account lockout', () => {
       );
       await expect(
         service.loginByUserCodeService({ ...dto, password: 'correct-password' } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS });
+      ).rejects.toMatchObject({
+        message: expect.stringContaining(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS),
+      });
     });
   });
 });

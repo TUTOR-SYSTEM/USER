@@ -178,15 +178,30 @@ describe('AdminRepository', () => {
       expect(where).toEqual({
         role: 'TUTOR',
         isActive: true,
-        OR: [
-          { email: contains },
-          { username: contains },
-          { firstName: contains },
-          { lastName: contains },
-          { phone: contains },
+        AND: [
+          {
+            OR: [
+              { email: contains },
+              { username: contains },
+              { firstName: contains },
+              { lastName: contains },
+              { phone: contains },
+            ],
+          },
         ],
       });
       expect(db.user.count).toHaveBeenCalledWith({ where });
+    });
+
+    it('requires every word of a multi-word search to match (e.g. "Gia Su")', async () => {
+      const { repo, db } = await build();
+      db.user.count.mockResolvedValue(0);
+      db.user.findMany.mockResolvedValue([]);
+      await repo.list({ role: 'TUTOR', page: 1, limit: 5, search: 'Gia  Su' });
+      const { where } = db.user.findMany.mock.calls[0][0];
+      expect(where.AND).toHaveLength(2);
+      expect(where.AND[0].OR[2]).toEqual({ firstName: { contains: 'Gia', mode: 'insensitive' } });
+      expect(where.AND[1].OR[3]).toEqual({ lastName: { contains: 'Su', mode: 'insensitive' } });
     });
 
     it('ignores a whitespace-only search and keeps only the role condition', async () => {

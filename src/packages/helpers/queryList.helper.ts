@@ -44,13 +44,18 @@ export function buildListWhereClause<
   const conditions: Record<string, unknown>[] = [];
 
   if (search?.trim()) {
-    const term = search.trim();
-    const searchConditions = (Object.values(searchableColumns ?? {}) as SearchableColumn[])
-      .filter((item) => !!item)
-      .map((item) => ({ [item.column]: { contains: term, mode: 'insensitive' } }));
-
-    if (searchConditions.length > 0) {
-      conditions.push({ OR: searchConditions });
+    const columns = (Object.values(searchableColumns ?? {}) as SearchableColumn[]).filter(
+      (item) => !!item,
+    );
+    // Each whitespace-separated word must match at least one searchable column. Names are stored
+    // split across first/last columns, so "Test HS" has to match "Test" in one and "HS" in the other.
+    for (const token of search.trim().split(/\s+/)) {
+      const tokenConditions = columns.map((item) => ({
+        [item.column]: { contains: token, mode: 'insensitive' },
+      }));
+      if (tokenConditions.length > 0) {
+        conditions.push({ OR: tokenConditions });
+      }
     }
   }
 
