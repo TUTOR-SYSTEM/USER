@@ -11,6 +11,7 @@ const SENSITIVE_KEYS = [
   'accessToken',
   'refreshToken',
   // One-time credentials carried in reset/verify links and in the RPC bodies that handle them.
+  'otp',
   'jti',
   'resetToken',
   'verifyToken',

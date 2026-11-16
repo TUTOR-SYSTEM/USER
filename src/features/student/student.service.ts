@@ -3,8 +3,10 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  HttpStatus,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import type { Prisma } from '../../generated/prisma/client';
@@ -74,11 +76,15 @@ export class StudentService {
     return this.generateUniqueCode();
   }
 
+  /**
+   * Vietnamese order ("Họ Tên"), same convention as tutors: the first word is the family name
+   * (`lastName`), the rest is the given name (`firstName`). A single word stays in `firstName`.
+   */
   private splitName(name: string): { firstName: string; lastName: string } {
     const spaceIdx = name.indexOf(' ');
     return {
-      firstName: spaceIdx === -1 ? name : name.slice(0, spaceIdx),
-      lastName: spaceIdx === -1 ? '' : name.slice(spaceIdx + 1),
+      firstName: spaceIdx === -1 ? name : name.slice(spaceIdx + 1),
+      lastName: spaceIdx === -1 ? '' : name.slice(0, spaceIdx),
     };
   }
 
@@ -97,7 +103,7 @@ export class StudentService {
     }
 
     throw new ConflictException(
-      `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: ${firstName} ${lastName}`,
+      `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: ${lastName} ${firstName}`,
     );
   }
 
@@ -105,17 +111,37 @@ export class StudentService {
    * Create a new student, auto-creating a linked PARENT account when parent info is supplied.
    * The creating user (tutor/admin) is recorded as `tutorId` on both records.
    */
+  private async resolveManagingTutor(dto: CreateStudentDto, actor: UserActor): Promise<string> {
+    if (actor.role === 'TUTOR') return actor.id;
+    const fieldError = (message: string) =>
+      new UnprocessableEntityException({
+        statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        message: ERROR_MESSAGES.VALIDATION_FAILED,
+        errors: [{ field: 'tutorId', message, code: 'required' }],
+      });
+    if (!dto.tutorId) throw fieldError(ERROR_MESSAGES.STUDENT_TUTOR_REQUIRED);
+    const tutor = await this.repo.findTutorById({ id: dto.tutorId });
+    if (!tutor) throw fieldError(ERROR_MESSAGES.TUTOR_NOT_FOUND);
+    return tutor.id;
+  }
+
   async create(dto: CreateStudentDto, actor: UserActor) {
     assertStaff(actor);
-    // The creating tutor owns the new records; an admin creates them unowned.
-    const tutorId = actor.role === 'TUTOR' ? actor.id : null;
+    // Tutor tạo thì học sinh thuộc chính tutor đó. Admin phải chọn gia sư quản lý (422 gắn vào field tutorId).
+    const tutorId = await this.resolveManagingTutor(dto, actor);
     // 1. Resolve the student code: if the client supplied one, it must be free — reject the
     // request instead of silently generating a different code. Otherwise, auto-generate one.
     let studentCode: string;
     if (dto.userCode) {
       const taken = await this.repo.getStudentByField({ field: 'userCode', value: dto.userCode });
-      if (taken)
-        throw new ConflictException(`${ERROR_MESSAGES.STUDENT_CODE_EXISTS}: ${dto.userCode}`);
+      if (taken) {
+        // Field-level duplicate → 400 with `errors[]` so the FE can mark the code input.
+        throw new BadRequestException({
+          statusCode: HttpStatus.BAD_REQUEST,
+          message: ERROR_MESSAGES.VALIDATION_FAILED,
+          errors: [{ field: 'userCode', message: ERROR_MESSAGES.STUDENT_CODE_EXISTS, code: 'duplicate' }],
+        });
+      }
       studentCode = dto.userCode;
     } else {
       studentCode = await this.generateUniqueCode();
@@ -124,9 +150,10 @@ export class StudentService {
     // 2. Split the student's full name into the first/last name columns `users` expects.
     const { firstName, lastName } = this.splitName(dto.studentName);
 
-    // 3. Generate a unique username + a random (never returned) password for the new student.
+    // 3. Generate a unique username. Password: the one the tutor/admin set, otherwise a random
+    // (never returned) one.
     const studentUsername = await this.generateUsernameFromName(firstName, lastName);
-    const hashedStudentPassword = await hashData(generateRandomPassword());
+    const hashedStudentPassword = await hashData(dto.password ?? generateRandomPassword());
 
     // 4. Link an existing PARENT when `parentId` is given (no new account, its details stay as-is);
     // otherwise, if parent info was submitted, create the PARENT user first so it can be linked below.
@@ -141,11 +168,12 @@ export class StudentService {
       );
       const parentUsername = await this.generateUsernameFromName(parentFirstName, parentLastName);
       const parentCode = await this.generateUniqueCode();
-      const hashedParentPassword = await hashData(generateRandomPassword());
+      const hashedParentPassword = await hashData(dto.parentPassword ?? generateRandomPassword());
 
       const parent = await this.repo.createParent({
         id: randomUUID(),
-        email: dto.parentEmail || '',
+        // `users.email` is UNIQUE: a parent without an email gets a unique placeholder, like students do.
+        email: dto.parentEmail || `${parentUsername}@no-email.local`,
         password: hashedParentPassword,
         username: parentUsername,
         firstName: parentFirstName,
@@ -396,5 +424,29 @@ export class StudentService {
     assertCanManage(actor, student);
     await this.repo.delete({ id });
     return { id };
+  }
+
+  /** Gia sư (chủ học sinh) hoặc admin đặt lại mật khẩu cho học sinh. Không bao giờ trả về mật khẩu. */
+  async setPassword(id: string, password: string, actor: UserActor) {
+    assertStaff(actor);
+    assertStudentId(id);
+    const student = await this.repo.findById({ id });
+    if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
+    assertCanManage(actor, student);
+    await this.repo.update({ id, data: { password: await hashData(password) } });
+    return { id, passwordUpdated: true };
+  }
+
+  /** Phụ huynh xem danh sách con (học sinh có parentId = phụ huynh đang đăng nhập). */
+  async findChildren(actor: UserActor) {
+    if (actor.role !== 'PARENT') throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+    const children = await this.repo.findChildrenByParentId({ parentId: actor.id });
+    return children.map((c) => ({
+      id: c.id,
+      firstName: c.firstName,
+      lastName: c.lastName,
+      userCode: c.userCode,
+      tutorId: c.tutorId,
+    }));
   }
 }

@@ -3,6 +3,7 @@ import { MessagePattern, Payload } from '@nestjs/microservices';
 import {
   createStudentSchema,
   getStudentsQuerySchema,
+  setStudentPasswordSchema,
   updateStudentSchema,
   type CreateStudentDto,
   type GetStudentsQueryDto,
@@ -64,5 +65,20 @@ export class StudentRpcController {
   async delete(@Payload() payload: { id: string } & RpcActorPayload) {
     const { actor, rest } = splitRpcActor(payload);
     return this.studentService.delete(rest.id, actor);
+  }
+
+  @MessagePattern('student.setPassword')
+  async setPassword(@Payload() payload: { id: string; password: string } & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    const body = parseRpcPayload<{ password: string }>(setStudentPasswordSchema, {
+      password: rest.password,
+    });
+    return this.studentService.setPassword(rest.id, body.password, actor);
+  }
+
+  @MessagePattern('student.findChildren')
+  async findChildren(@Payload() payload: RpcActorPayload) {
+    const { actor } = splitRpcActor(payload);
+    return this.studentService.findChildren(actor);
   }
 }

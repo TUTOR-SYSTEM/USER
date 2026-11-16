@@ -134,7 +134,7 @@ export class StudentController {
   }
 
   @Get('findAll')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'TUTOR')
   @HttpCode(StatusCodes.OK)
   @ApiOperation({ summary: 'List students', description: 'Get paginated list of students' })
   @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { newPasswordSchema } from '../auth/password.schema';
+import { managedPasswordSchema } from '../auth/password.schema';
 
 /**
  * Admin-managed accounts (TUTOR / STUDENT).
@@ -14,6 +14,7 @@ export const createManagedUserSchema = z
   .object({
     email: z
       .string({ message: 'Email is required' })
+      .trim()
       .min(1, { message: 'Email is required' })
       .email({ message: 'Invalid email address' }),
     username: z
@@ -32,7 +33,7 @@ export const createManagedUserSchema = z
       .trim()
       .min(2, { message: 'Last name must be at least 2 characters' })
       .max(100, { message: 'Last name must be at most 100 characters' }),
-    password: newPasswordSchema,
+    password: managedPasswordSchema,
     phone: z.string().trim().max(20, { message: 'Phone must be at most 20 characters' }).optional(),
     gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
     dateOfBirth: z.coerce.date().optional(),
@@ -52,7 +53,7 @@ export const createManagedUserSchema = z
 /** Update a tutor or student account — every field optional, no password here. */
 export const updateManagedUserSchema = z
   .object({
-    email: z.string().email({ message: 'Invalid email address' }).optional(),
+    email: z.string().trim().email({ message: 'Invalid email address' }).optional(),
     username: z.string().trim().min(1).max(50).optional(),
     firstName: z.string().trim().min(2).max(100).optional(),
     lastName: z.string().trim().min(2).max(100).optional(),
@@ -66,7 +67,7 @@ export const updateManagedUserSchema = z
       .nullable()
       .optional(),
     description: z.string().max(5000).nullable().optional(),
-    avatar: z.string().url({ message: 'Avatar must be a url ...' }).nullable().optional(),
+    avatar: z.string().url({ message: 'Avatar must be a url ...' }).regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' }).nullable().optional(),
     isActive: z.boolean().optional(),
   })
   .strict();

@@ -24,8 +24,8 @@ export const AUTH_MESSAGES = {
   LAST_NAME_REQUIRED: ERROR_MESSAGES.AUTH_LAST_NAME_REQUIRED,
   LAST_NAME_MAX: ERROR_MESSAGES.AUTH_LAST_NAME_MAX,
   REFRESH_TOKEN_REQUIRED: ERROR_MESSAGES.AUTH_REFRESH_TOKEN_REQUIRED,
-  RESET_TOKEN_REQUIRED: ERROR_MESSAGES.AUTH_RESET_TOKEN_REQUIRED,
-  RESET_TOKEN_INVALID: ERROR_MESSAGES.AUTH_RESET_TOKEN_INVALID,
+  OTP_REQUIRED: ERROR_MESSAGES.AUTH_OTP_REQUIRED,
+  OTP_INVALID: ERROR_MESSAGES.AUTH_OTP_INVALID,
   VERIFY_EMAIL_TOKEN_REQUIRED: ERROR_MESSAGES.AUTH_VERIFY_EMAIL_TOKEN_REQUIRED,
   VERIFY_EMAIL_TOKEN_INVALID: ERROR_MESSAGES.AUTH_VERIFY_EMAIL_TOKEN_INVALID,
   CONFIRM_PASSWORD_REQUIRED: ERROR_MESSAGES.AUTH_CONFIRM_PASSWORD_REQUIRED,
@@ -36,6 +36,7 @@ export const AUTH_MESSAGES = {
 
 export const emailFieldSchema = z
   .string({ message: AUTH_MESSAGES.EMAIL_REQUIRED })
+  .trim()
   .min(1, { message: AUTH_MESSAGES.EMAIL_REQUIRED })
   .email({ message: AUTH_MESSAGES.EMAIL_INVALID });
 
@@ -82,9 +83,11 @@ export const forgotPasswordSchema = z.object({
 
 const resetPasswordBodySchema = z
   .object({
-    jti: z
-      .string({ message: AUTH_MESSAGES.RESET_TOKEN_REQUIRED })
-      .uuid({ message: AUTH_MESSAGES.RESET_TOKEN_INVALID }),
+    email: emailFieldSchema,
+    // The 6-digit code from the reset email. Digits only; the server compares it to a stored hash.
+    otp: z
+      .string({ message: AUTH_MESSAGES.OTP_REQUIRED })
+      .regex(/^\d{6}$/, { message: AUTH_MESSAGES.OTP_INVALID }),
     password: newPasswordSchema,
     confirmPassword: z
       .string({ message: AUTH_MESSAGES.CONFIRM_PASSWORD_REQUIRED })

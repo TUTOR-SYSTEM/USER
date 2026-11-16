@@ -1,7 +1,21 @@
 import { z } from 'zod';
 
+/** Mật khẩu do gia sư/admin đặt: 8–100 ký tự, đủ chữ thường, chữ hoa, số, ký tự đặc biệt (khớp auth). */
+export const studentPasswordSchema = z
+  .string({ message: 'Password is required' })
+  .min(8, { message: 'Password must be at least 8 characters' })
+  .max(100, { message: 'Password must not exceed 100 characters' })
+  .regex(/[a-z]/, { message: 'Password must contain a lowercase letter' })
+  .regex(/[A-Z]/, { message: 'Password must contain an uppercase letter' })
+  .regex(/\d/, { message: 'Password must contain a number' })
+  .regex(/[^A-Za-z0-9]/, { message: 'Password must contain a special character' });
+
 export const createStudentSchema = z.object({
-  email: z.string().email('Invalid email').optional(),
+  email: z.string().trim().email('Invalid email').optional(),
+  // Tùy chọn: không gửi thì BE sinh mật khẩu ngẫu nhiên (không trả về).
+  password: studentPasswordSchema.optional(),
+  // Mật khẩu cho phụ huynh MỚI được tạo cùng học sinh (không áp dụng khi liên kết parentId có sẵn).
+  parentPassword: studentPasswordSchema.optional(),
   studentName: z
     .string({ message: 'Student name must be required ...' })
     .min(1, { message: 'Student name must be 1 character ...' })
@@ -18,7 +32,9 @@ export const createStudentSchema = z.object({
     .optional(),
   parentRelationship: z.enum(['FATHER', 'MOTHER', 'GUARDIAN']).optional(),
   parentPhone: z.string().max(20).optional(),
-  parentEmail: z.string().email('Invalid parent email').optional(),
+  parentEmail: z.string().trim().email('Invalid parent email').optional(),
+  // Gia sư quản lý. Bắt buộc khi ADMIN tạo; TUTOR thì luôn là chính mình (service quyết định).
+  tutorId: z.string().uuid({ message: 'Tutor id must be uuid' }).optional(),
 });
 
 export const updateStudentSchema = z.object({
@@ -33,12 +49,16 @@ export const updateStudentSchema = z.object({
   parentId: z.string().uuid({ message: 'Parent id must be uuid' }).optional(),
   parentName: z.string().min(1).max(255).optional(),
   parentPhone: z.string().max(20).optional(),
-  parentEmail: z.string().email('Invalid parent email').optional(),
+  parentEmail: z.string().trim().email('Invalid parent email').optional(),
   parentRelationship: z.enum(['FATHER', 'MOTHER', 'GUARDIAN']).optional(),
   parentAddress: z.string().max(500).optional(),
   parentDistrict: z.string().max(30).optional(),
   parentProvince: z.string().max(30).optional(),
-  avatar: z.string().url().optional().nullable(),
+  avatar: z.string().url().regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' }).optional().nullable(),
+});
+
+export const setStudentPasswordSchema = z.object({
+  password: studentPasswordSchema,
 });
 
 export const getStudentsQuerySchema = z.object({

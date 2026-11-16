@@ -1,4 +1,9 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { StudentService } from 'src/features/student/student.service';
@@ -47,6 +52,7 @@ describe('StudentService', () => {
     update: jest.Mock;
     updateParent: jest.Mock;
     findParentById: jest.Mock;
+    findTutorById: jest.Mock;
     delete: jest.Mock;
     usernameExists: jest.Mock;
   };
@@ -64,6 +70,7 @@ describe('StudentService', () => {
       update: jest.fn(),
       updateParent: jest.fn(),
       findParentById: jest.fn(),
+      findTutorById: jest.fn(),
       delete: jest.fn(),
       usernameExists: makeUsernameExists(usernameRows),
     };
@@ -118,12 +125,53 @@ describe('StudentService', () => {
 
   describe('create', () => {
     const baseDto = { studentName: 'Nguyen Van A' };
+    const MANAGED_TUTOR_ID = '66666666-6666-4666-8666-666666666666';
+
+    it('requires admin to choose the managing tutor (422 on field tutorId)', async () => {
+      const err = await service.create({ ...baseDto }, ADMIN_ACTOR).catch((e) => e);
+      expect(err).toBeInstanceOf(UnprocessableEntityException);
+      expect(err.getResponse()).toMatchObject({
+        errors: [{ field: 'tutorId', message: ERROR_MESSAGES.STUDENT_TUTOR_REQUIRED }],
+      });
+      expect(repo.createStudent).not.toHaveBeenCalled();
+    });
+
+    it('rejects a managing tutor id that is not a TUTOR account', async () => {
+      repo.findTutorById.mockResolvedValueOnce(null);
+      const err = await service
+        .create({ ...baseDto, tutorId: MANAGED_TUTOR_ID }, ADMIN_ACTOR)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(UnprocessableEntityException);
+      expect(repo.createStudent).not.toHaveBeenCalled();
+    });
+
+    it('assigns the student to the tutor the admin picked', async () => {
+      repo.findTutorById.mockResolvedValueOnce({ id: MANAGED_TUTOR_ID, role: 'TUTOR' });
+      await service.create({ ...baseDto, tutorId: MANAGED_TUTOR_ID }, ADMIN_ACTOR);
+      expect(repo.findTutorById).toHaveBeenCalledWith({ id: MANAGED_TUTOR_ID });
+      expect(repo.createStudent).toHaveBeenCalledWith(
+        expect.objectContaining({ tutorId: MANAGED_TUTOR_ID }),
+      );
+    });
+
+    it('always assigns a tutor-created student to the acting tutor, ignoring any tutorId in the body', async () => {
+      await service.create({ ...baseDto, tutorId: MANAGED_TUTOR_ID } as never, TUTOR);
+      expect(repo.findTutorById).not.toHaveBeenCalled();
+      expect(repo.createStudent).toHaveBeenCalledWith(
+        expect.objectContaining({ tutorId: TUTOR.id }),
+      );
+    });
 
     it('rejects an explicit userCode that is already taken, without inserting', async () => {
       repo.getStudentByField.mockResolvedValueOnce({ id: 'someone' });
-      await expect(service.create({ ...baseDto, userCode: 'STU001' }, TUTOR)).rejects.toThrow(
-        `${ERROR_MESSAGES.STUDENT_CODE_EXISTS}: STU001`,
-      );
+      const err = await service
+        .create({ ...baseDto, userCode: 'STU001' }, TUTOR)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        message: ERROR_MESSAGES.VALIDATION_FAILED,
+        errors: [{ field: 'userCode', message: ERROR_MESSAGES.STUDENT_CODE_EXISTS }],
+      });
       expect(repo.createStudent).not.toHaveBeenCalled();
     });
 
@@ -143,10 +191,17 @@ describe('StudentService', () => {
       );
     });
 
-    it('splits the full name on the first space', async () => {
+    it('gives a parent without an email a unique placeholder (users.email is UNIQUE)', async () => {
+      await service.create({ studentName: 'Nguyen Van A', parentName: 'Tran Thi B' } as never, TUTOR);
+      expect(repo.createParent).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'tranthi_b@no-email.local' }),
+      );
+    });
+
+    it('splits the full name on the first space: first word is the family name (lastName)', async () => {
       await service.create({ studentName: 'Nguyen Van A' }, TUTOR);
       expect(repo.createStudent).toHaveBeenCalledWith(
-        expect.objectContaining({ firstName: 'Nguyen', lastName: 'Van A' }),
+        expect.objectContaining({ lastName: 'Nguyen', firstName: 'Van A' }),
       );
     });
 
@@ -159,18 +214,18 @@ describe('StudentService', () => {
 
     it('builds a lowercase ascii username from lastName+firstName, stripping diacritics', async () => {
       await service.create({ studentName: 'Nguyễn Văn Ánh' }, TUTOR);
-      // firstName = "Nguyễn", lastName = "Văn Ánh" -> "Văn Ánh" + "Nguyễn" -> ascii
+      // lastName = "Nguyễn", firstName = "Văn Ánh" -> "Nguyễn" + "Văn Ánh" -> ascii
       expect(repo.createStudent).toHaveBeenCalledWith(
-        expect.objectContaining({ username: 'van_anhnguyen' }),
+        expect.objectContaining({ username: 'nguyenvan_anh' }),
       );
     });
 
     it('appends _1, _2 ... while the username is taken', async () => {
-      // first candidate taken, second free (base is lastName+firstName = 'Van ANguyen')
+      // first candidate taken, second free (base is lastName+firstName = 'NguyenVan A')
       await build([[{ id: 'taken' }], []]);
       await service.create({ studentName: 'Nguyen Van A' }, TUTOR);
       expect(repo.createStudent).toHaveBeenCalledWith(
-        expect.objectContaining({ username: 'van_anguyen_1' }),
+        expect.objectContaining({ username: 'nguyenvan_a_1' }),
       );
     });
 
@@ -198,7 +253,7 @@ describe('StudentService', () => {
 
       await service.create(baseDto, TUTOR);
       expect(repo.createStudent).toHaveBeenLastCalledWith(
-        expect.objectContaining({ email: 'van_anguyen@no-email.local' }),
+        expect.objectContaining({ email: 'nguyenvan_a@no-email.local' }),
       );
     });
 
@@ -225,8 +280,8 @@ describe('StudentService', () => {
 
       expect(repo.createParent).toHaveBeenCalledWith(
         expect.objectContaining({
-          firstName: 'Tran',
-          lastName: 'Thi B',
+          firstName: 'Thi B',
+          lastName: 'Tran',
           email: 'parent@example.com',
           phone: '0900000000',
           relationship: 'MOTHER',
@@ -253,10 +308,15 @@ describe('StudentService', () => {
       expect(repo.createParent).toHaveBeenCalledWith(expect.objectContaining({ gender }));
     });
 
-    it('defaults parent email to empty string and phone/relationship to null', async () => {
+    it('defaults parent phone/relationship to null and email to a unique placeholder', async () => {
       await service.create({ studentName: 'A B', parentName: 'C D' }, TUTOR);
       expect(repo.createParent).toHaveBeenCalledWith(
-        expect.objectContaining({ email: '', phone: null, relationship: null, gender: 'FEMALE' }),
+        expect.objectContaining({
+          email: expect.stringMatching(/@no-email\.local$/),
+          phone: null,
+          relationship: null,
+          gender: 'FEMALE',
+        }),
       );
     });
 
@@ -499,7 +559,7 @@ describe('StudentService', () => {
       await service.update(STUDENT_ID, { studentName: 'Le Thi Hong' } as never, ADMIN_ACTOR);
       expect(repo.update).toHaveBeenCalledWith({
         id: STUDENT_ID,
-        data: { firstName: 'Le', lastName: 'Thi Hong' },
+        data: { firstName: 'Thi Hong', lastName: 'Le' },
       });
     });
 
@@ -569,8 +629,8 @@ describe('StudentService', () => {
       expect(repo.updateParent).toHaveBeenCalledWith({
         id: PARENT_ID,
         data: {
-          firstName: 'Pham',
-          lastName: 'Van D',
+          firstName: 'Van D',
+          lastName: 'Pham',
           phone: null,
           email: 'new@example.com',
           relationship: 'GUARDIAN',
@@ -611,8 +671,8 @@ describe('StudentService', () => {
 
       expect(repo.createParent).toHaveBeenCalledWith(
         expect.objectContaining({
-          firstName: 'Vu',
-          lastName: 'Thi E',
+          firstName: 'Thi E',
+          lastName: 'Vu',
           userCode: 'PARNEW',
           relationship: 'MOTHER',
           gender: 'FEMALE',

@@ -215,7 +215,7 @@ export class AuthController {
       },
     },
   })
-  @SwaggerResponse({ status: 200, description: 'Reset link sent (or logged to console in dev)' })
+  @SwaggerResponse({ status: 200, description: 'Reset code sent if the email is registered' })
   @ApiResponse({ statusCode: StatusCodes.OK, message: 'Forgot password successful' })
   forgotPassword(
     @Body(new ZodValidationPipe<ForgotPasswordDto>(forgotPasswordSchema))
@@ -230,17 +230,19 @@ export class AuthController {
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: 'Reset password',
-    description: 'Reset password using the token from the reset email',
+    description: 'Reset password using the 6-digit code from the reset email',
   })
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['jti', 'password', 'confirmPassword'],
+      required: ['email', 'otp', 'password', 'confirmPassword'],
       properties: {
-        jti: {
+        email: { type: 'string', format: 'email', example: 'user@example.com' },
+        otp: {
           type: 'string',
-          format: 'uuid',
-          description: 'Reset token (JWT ID) from the reset email',
+          pattern: '^\\d{6}$',
+          example: '482931',
+          description: '6-digit code from the reset email (valid 5 minutes, 5 attempts)',
         },
         password: { type: 'string', minLength: 8, maxLength: 100, example: 'NewPass123!' },
         newPassword: {

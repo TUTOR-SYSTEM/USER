@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { compareData } from '@packages/helpers';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { AdminService } from 'src/features/admin/admin.service';
@@ -95,8 +99,11 @@ describe('AdminService', () => {
     it('rejects an email already in use, case-insensitively', async () => {
       repo.findByEmail.mockResolvedValue([row()]);
 
-      await expect(service.createTutor(createDto as never, ADMIN_ACTOR)).rejects.toMatchObject({
-        message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS,
+      const err = await service.createTutor(createDto as never, ADMIN_ACTOR).catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        message: ERROR_MESSAGES.VALIDATION_FAILED,
+        errors: [{ field: 'email', message: ERROR_MESSAGES.EMAIL_EXISTS }],
       });
       expect(repo.create).not.toHaveBeenCalled();
     });
@@ -106,7 +113,7 @@ describe('AdminService', () => {
 
       await expect(
         service.createStudent({ ...createDto, username: 'taken' } as never, ADMIN_ACTOR),
-      ).rejects.toBeInstanceOf(ConflictException);
+      ).rejects.toBeInstanceOf(BadRequestException);
       expect(repo.create).not.toHaveBeenCalled();
     });
   });
@@ -193,11 +200,13 @@ describe('AdminService', () => {
     it('rejects a userCode that belongs to a different student', async () => {
       repo.findByUserCode.mockResolvedValue([row({ id: OTHER_ID })]);
 
-      await expect(
-        service.updateStudent(USER_ID, { userCode: 'ABC123' } as never, ADMIN_ACTOR),
-      ).rejects.toMatchObject({
-        constructor: ConflictException,
-        message: `${ERROR_MESSAGES.STUDENT_CODE_EXISTS}: ABC123`,
+      const err = await service
+        .updateStudent(USER_ID, { userCode: 'ABC123' } as never, ADMIN_ACTOR)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        message: ERROR_MESSAGES.VALIDATION_FAILED,
+        errors: [{ field: 'userCode', message: ERROR_MESSAGES.STUDENT_CODE_EXISTS }],
       });
       expect(repo.updateByIdAndRole).not.toHaveBeenCalled();
     });
@@ -259,7 +268,7 @@ describe('AdminService', () => {
 
       await expect(
         service.updateTutor(USER_ID, { email: 'dup@example.test' } as never, ADMIN_ACTOR),
-      ).rejects.toBeInstanceOf(ConflictException);
+      ).rejects.toBeInstanceOf(BadRequestException);
       expect(repo.updateByIdAndRole).not.toHaveBeenCalled();
     });
 
@@ -318,10 +327,13 @@ describe('AdminService', () => {
     it('rejects a username that another account already uses', async () => {
       repo.findByUsername.mockResolvedValue([row({ id: OTHER_ID })]);
 
-      await expect(
-        service.updateTutor(USER_ID, { username: ' taken ' } as never, ADMIN_ACTOR),
-      ).rejects.toMatchObject({
-        message: `${ERROR_MESSAGES.USERNAME_EXISTS}: taken`,
+      const err = await service
+        .updateTutor(USER_ID, { username: ' taken ' } as never, ADMIN_ACTOR)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        message: ERROR_MESSAGES.VALIDATION_FAILED,
+        errors: [{ field: 'username', message: ERROR_MESSAGES.USERNAME_EXISTS }],
       });
       expect(repo.updateByIdAndRole).not.toHaveBeenCalled();
     });
