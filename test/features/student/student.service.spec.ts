@@ -53,6 +53,8 @@ describe('StudentService', () => {
     updateParent: jest.Mock;
     findParentById: jest.Mock;
     findTutorById: jest.Mock;
+    hasEnrollmentWithOtherTutor: jest.Mock;
+    findClassesByStudentIds: jest.Mock;
     delete: jest.Mock;
     usernameExists: jest.Mock;
   };
@@ -71,6 +73,8 @@ describe('StudentService', () => {
       updateParent: jest.fn(),
       findParentById: jest.fn(),
       findTutorById: jest.fn(),
+      hasEnrollmentWithOtherTutor: jest.fn().mockResolvedValue(false),
+      findClassesByStudentIds: jest.fn().mockResolvedValue([]),
       delete: jest.fn(),
       usernameExists: makeUsernameExists(usernameRows),
     };
@@ -410,6 +414,38 @@ describe('StudentService', () => {
       });
     });
 
+    it('attaches joined classes, classCount and the managing tutor summary', async () => {
+      repo.getAllStudents.mockResolvedValue({
+        students: [{ ...raw, tutorId: 'tutor-1', tutor: { id: 'tutor-1', firstName: 'Minh', lastName: 'Nguyen', userCode: 'T1', email: 't@x.com', phone: null, avatar: null, password: 'secret' } }],
+        pagination: { total: 1, page: 1, limit: 10, totalPages: 1 },
+      });
+      repo.findClassesByStudentIds.mockResolvedValue([
+        { studentId: STUDENT_ID, id: 'c1', name: 'Toan 1', code: 'TOAN1' },
+        { studentId: STUDENT_ID, id: 'c2', name: 'Ly 1', code: 'LY1' },
+      ]);
+      const { students } = await service.findAll({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
+      expect(repo.findClassesByStudentIds).toHaveBeenCalledWith({ studentIds: [STUDENT_ID] });
+      expect(students[0]).toMatchObject({
+        tutorId: 'tutor-1',
+        tutor: { id: 'tutor-1', firstName: 'Minh', lastName: 'Nguyen', userCode: 'T1' },
+        classes: [
+          { id: 'c1', name: 'Toan 1', code: 'TOAN1' },
+          { id: 'c2', name: 'Ly 1', code: 'LY1' },
+        ],
+        classCount: 2,
+      });
+      expect(students[0]).not.toHaveProperty('tutor.password');
+    });
+
+    it('returns empty classes and a null tutor when the student has none', async () => {
+      repo.getAllStudents.mockResolvedValue({
+        students: [{ ...raw, tutorId: null, tutor: null }],
+        pagination: { total: 1, page: 1, limit: 10, totalPages: 1 },
+      });
+      const { students } = await service.findAll({ page: 1, limit: 10 } as never, ADMIN_ACTOR);
+      expect(students[0]).toMatchObject({ tutorId: null, tutor: null, classes: [], classCount: 0 });
+    });
+
     it('exposes null parent fields when there is no linked parent', async () => {
       repo.getAllStudents.mockResolvedValue({
         students: [{ ...raw, parentId: null, parent: null }],
@@ -553,6 +589,22 @@ describe('StudentService', () => {
       expect(repo.update).not.toHaveBeenCalled();
       expect(repo.updateParent).not.toHaveBeenCalled();
       expect(repo.createParent).not.toHaveBeenCalled();
+    });
+
+    const NEW_TUTOR_ID = '99999999-9999-4999-8999-999999999999';
+
+    it('refuses to move a student who is enrolled in another tutor\'s class', async () => {
+      repo.findTutorById.mockResolvedValueOnce({ id: NEW_TUTOR_ID, role: 'TUTOR' });
+      repo.hasEnrollmentWithOtherTutor.mockResolvedValueOnce(true);
+
+      await expect(
+        service.update(STUDENT_ID, { tutorId: NEW_TUTOR_ID } as never, ADMIN_ACTOR),
+      ).rejects.toThrow(new BadRequestException(ERROR_MESSAGES.CLASS_TUTOR_CONFLICT));
+      expect(repo.hasEnrollmentWithOtherTutor).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        tutorId: NEW_TUTOR_ID,
+      });
+      expect(repo.update).not.toHaveBeenCalled();
     });
 
     it('splits studentName into first/last on update', async () => {

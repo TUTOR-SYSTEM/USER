@@ -102,6 +102,19 @@ export class AdminService {
       const exists = await this.adminRepository.existsWithRole(dto.tutorId, 'TUTOR');
       if (!exists) throw new NotFoundException(ERROR_MESSAGES.TUTOR_NOT_FOUND);
     }
+    if (dto.tutorId !== undefined) {
+      const current = await this.adminRepository.findStudentDetail(id);
+      if (
+        current &&
+        current.tutorId !== dto.tutorId &&
+        (await this.adminRepository.hasEnrollmentWithOtherTutor({
+          studentId: id,
+          tutorId: dto.tutorId,
+        }))
+      ) {
+        throw new BadRequestException(ERROR_MESSAGES.CLASS_TUTOR_CONFLICT);
+      }
+    }
 
     await this.updateManagedUser(id, 'STUDENT', dto);
     return this.getStudentDetail(id);

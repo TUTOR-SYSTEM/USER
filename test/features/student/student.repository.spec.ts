@@ -79,6 +79,7 @@ describe('StudentRepository', () => {
         id: STUDENT_ID,
         parentId: null,
         parent: null,
+        tutor: null,
       });
       expect(db.user.findUnique).not.toHaveBeenCalled();
     });
@@ -91,8 +92,27 @@ describe('StudentRepository', () => {
         id: STUDENT_ID,
         parentId: PARENT_ID,
         parent: { id: PARENT_ID, role: 'PARENT' },
+        tutor: null,
       });
       expect(db.user.findUnique).toHaveBeenCalledWith({ where: { id: PARENT_ID } });
+    });
+
+    it('loads the managing tutor with a summary select (never the password)', async () => {
+      const { repo, db } = await build();
+      db.user.findFirst.mockResolvedValue({ id: STUDENT_ID, parentId: null, tutorId: 'tutor-1' });
+      db.user.findUnique.mockResolvedValue({ id: 'tutor-1', firstName: 'A', lastName: 'B' });
+      const result = await repo.findById({ id: STUDENT_ID });
+      expect(result).toMatchObject({ tutor: { id: 'tutor-1', firstName: 'A', lastName: 'B' } });
+      expect(db.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'tutor-1' },
+        select: expect.not.objectContaining({ password: true }),
+      });
+    });
+
+    it('findClassesByStudentIds returns [] without querying when no ids are given', async () => {
+      const { repo, db } = await build();
+      // the mock has no $queryRaw: resolving [] proves the early return skipped the query
+      await expect(repo.findClassesByStudentIds({ studentIds: [] })).resolves.toEqual([]);
     });
 
     it('sets parent to null when the parentId points at a missing row', async () => {

@@ -39,6 +39,20 @@ type ListParams = {
 export class AdminRepository {
   constructor(private readonly db: PrismaService) {}
 
+  /**
+   * Quy tắc: gia sư quản lý học sinh = gia sư của lớp học sinh đang tham gia.
+   * true nếu học sinh đang thuộc một lớp có gia sư khác `tutorId` (null = chưa có gia sư).
+   */
+  async hasEnrollmentWithOtherTutor({ studentId, tutorId }: { studentId: string; tutorId: string | null }) {
+    const rows = await this.db.$queryRaw<{ n: bigint }[]>`
+      SELECT COUNT(*)::bigint AS n
+      FROM class_students cs
+      JOIN classes c ON c.id = cs.class_id
+      WHERE cs.student_id = ${studentId}::uuid
+        AND c.tutor_id IS DISTINCT FROM ${tutorId}::uuid`;
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
+
   findByEmail(email: string) {
     return this.db.user.findMany({ where: { email }, select: { id: true }, take: 1 });
   }

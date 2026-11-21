@@ -16,6 +16,13 @@
   projections that must hide `password`. Role-scoped writes use `updateMany`/`deleteMany`
   (Prisma `update`/`delete` need a unique where), then re-read if the row is needed; `update`
   on a missing row throws `P2025`, which repositories turn into `null`.
+- **Tables not modelled in `schema.prisma`** (e.g. `class_students`/`classes`, owned by
+  tutor-service but in the same DB): read them with `this.db.$queryRaw` tagged templates and
+  `Prisma.join(ids)` for `IN (...)` lists (see `StudentRepository.findClassesByStudentIds`). Return
+  `[]` before querying when the id list is empty. Don't add a Prisma model for another service's
+  table just to read it, and never write to it from this repo.
+- **Test mocks**: `makePrismaMock()` has no `$queryRaw`; test raw-SQL repo methods by asserting
+  the early-return path or by mocking the repo method at the service level.
 - **Error mapping**: `ErrorInterceptor` maps Prisma codes `P2002`/`P2003`/`P2011` (and raw pg
   `23505`/`23503`/`23502`) to friendly messages and hides `Invalid \`prisma.…\`` text.
 - **Tests**: mock `PrismaService` with `makePrismaMock()` (`test/support/prisma-mock.ts`); jest

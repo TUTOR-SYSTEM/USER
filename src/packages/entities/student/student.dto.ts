@@ -25,6 +25,16 @@ export type StudentClassResponseDto = {
   code: string;
 };
 
+export type StudentTutorResponseDto = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  userCode: string | null;
+  email: string;
+  phone: string | null;
+  avatar: string | null;
+};
+
 export type StudentResponseDto = {
   id: string;
   email: string;
@@ -46,6 +56,8 @@ export type StudentResponseDto = {
   parentEmail: string | null;
   parentRelationship: string | null;
   parent: StudentParentResponseDto | null;
+  tutorId: string | null;
+  tutor: StudentTutorResponseDto | null;
   role: string | null;
   isActive: boolean | null;
   classes: StudentClassResponseDto[];

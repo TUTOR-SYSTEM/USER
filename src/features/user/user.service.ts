@@ -5,7 +5,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { UserRepository } from './user.repository';
@@ -46,7 +45,6 @@ export const actorFrom = (user: { id?: string; role?: string }): UserActor => ({
 
 /** Fields only an admin (`PUT /user/updateUserByAdmin/:id`) may change — never via self-update (privilege escalation). */
 const SELF_UPDATE_RESTRICTED_FIELDS = [
-  'email',
   'role',
   'isActive',
   'userCode',
@@ -405,6 +403,10 @@ export class UserService {
     ) {
       throw new BadRequestException(ERROR_MESSAGES.STUDENT_CANNOT_UPDATE_NAME);
     }
+    // Email: ADMIN/TUTOR/PARENT may change their own; a STUDENT may not (only an admin can).
+    if (actor.id === id && actor.role === 'STUDENT' && data.email !== undefined) {
+      throw new BadRequestException(ERROR_MESSAGES.STUDENT_CANNOT_UPDATE_EMAIL);
+    }
 
     return this.applyUserUpdate({ id, data });
   }
@@ -482,7 +484,9 @@ export class UserService {
 
     const isMatch = await compareData(dto.currentPassword, user.password);
     if (!isMatch) {
-      throw new UnauthorizedException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);
+      // 400 (not 401): the session is valid, only the submitted current password is wrong — a 401
+      // would make clients treat the access token as expired and sign the user out.
+      throw new BadRequestException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);
     }
 
     await this.updateUserPasswordService({ id: userId, password: dto.newPassword });

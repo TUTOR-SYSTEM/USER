@@ -219,6 +219,10 @@ export const ERROR_TRANSLATIONS = {
   CLASS_NOT_FOUND: { vi: 'Không tìm thấy lớp học', en: 'Class not found' },
   USER_NOT_EXIST: { vi: 'Người dùng không tồn tại', en: 'User does not exist' },
   TUTOR_NOT_FOUND: { vi: 'Không tìm thấy gia sư', en: 'Tutor not found' },
+  CLASS_TUTOR_CONFLICT: {
+    vi: 'Học sinh đang học lớp của gia sư khác nên không thể đổi gia sư quản lý. Hãy chuyển học sinh khỏi lớp đó trước.',
+    en: 'The student is enrolled in a class of another tutor; remove them from that class first',
+  },
   STUDENT_NOT_FOUND: { vi: 'Không tìm thấy học sinh', en: 'Student not found' },
   USER_NOT_A_STUDENT: { vi: 'Người dùng không phải học sinh', en: 'User is not a student' },
   UNABLE_TO_GENERATE_UNIQUE_CODE: {
@@ -311,6 +315,10 @@ export const ERROR_TRANSLATIONS = {
   STUDENT_CANNOT_UPDATE_NAME: {
     vi: 'Học sinh không được tự thay đổi họ tên',
     en: 'Students are not allowed to update their own first/last name',
+  },
+  STUDENT_CANNOT_UPDATE_EMAIL: {
+    vi: 'Học sinh không được tự thay đổi email',
+    en: 'Students are not allowed to update their own email',
   },
 
   CANNOT_UPDATE_RESTRICTED_FIELDS: {

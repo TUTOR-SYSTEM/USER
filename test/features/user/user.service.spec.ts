@@ -2,7 +2,6 @@ import {
   BadRequestException,
   ConflictException,
   Logger,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { compareData, hashData } from '@packages/helpers';
 import { ERROR_MESSAGES } from 'src/data/constants';
@@ -514,7 +513,7 @@ describe('UserService', () => {
           newPassword: 'New-1',
         } as never),
       ).rejects.toMatchObject({
-        constructor: UnauthorizedException,
+        constructor: BadRequestException,
         message: ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT,
       });
       expect(repo.updatePassword).not.toHaveBeenCalled();
