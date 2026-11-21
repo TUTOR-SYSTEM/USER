@@ -32,6 +32,7 @@
     "db:seed:user": "bun scripts/seed-user.ts",
     "db:seed:roles": "bun scripts/seed-role-accounts.ts",
     "db:seed:users-bulk": "bun scripts/seed-users-bulk.ts",
+    "db:seed:tutors-students": "bun scripts/seed-tutors-students.ts",
     "db:seed:categories": "bun scripts/seed-categories.ts",
     "db:seed:grades": "bun scripts/seed-grades.ts",
     "db:seed:wallet": "bun scripts/seed-wallet.ts",

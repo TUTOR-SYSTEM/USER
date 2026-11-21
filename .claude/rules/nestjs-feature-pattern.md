@@ -38,8 +38,11 @@ methods) is the closer shape for what you're building, and lean on the inline co
   `RolesGuard` (from `@packages/guards`) — not a non-existent `@Admin()` decorator.
 - **`/students/*` and `/admin/students/*` are two separate, unrelated surfaces** — don't assume
   a fix in one applies to the other. `src/features/student/*` is the normal feature-layered
-  student domain (parent linking + basic profile fields only — class enrollment/scores/session
-  history were removed in the 2026-09 trim, see `[[trimmed-feature-set]]`). `src/features/admin/*`
+  student domain (parent linking, managing-tutor link (`tutorId`) + basic profile fields. Read-only
+  class membership is returned as `classes`/`classCount` on list and detail — the join over
+  tutor-owned `class_students`/`classes` is raw SQL in `StudentRepository.findClassesByStudentIds`,
+  see `database.md`; scores/session history were removed in the 2026-09 trim,
+  see `[[trimmed-feature-set]]`). `src/features/admin/*`
   (`AdminController`/`AdminService`/`AdminRepository`) is a *generic* managed-user CRUD shared by
   both `/admin/students` and `/admin/tutors` via a single `ManagedRole` ('TUTOR' | 'STUDENT')
   parameter and one `publicColumns` projection — it has no parent-linking concept by default.

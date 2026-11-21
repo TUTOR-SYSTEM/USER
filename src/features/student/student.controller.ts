@@ -247,6 +247,8 @@ export class StudentController {
       type: 'object',
       properties: {
         studentName: { type: 'string', maxLength: 255, example: 'Nguyen Van A' },
+        lastName: { type: 'string', maxLength: 255, example: 'Nguyen' },
+        firstName: { type: 'string', maxLength: 255, example: 'Van A' },
         studentPhone: { type: 'string', example: '0912345678' },
         gender: { type: 'string', enum: ['MALE', 'FEMALE', 'OTHER'], example: 'MALE' },
         birthday: {
@@ -267,6 +269,8 @@ export class StudentController {
           enum: ['FATHER', 'MOTHER', 'GUARDIAN'],
           example: 'FATHER',
         },
+        parentLastName: { type: 'string', maxLength: 255, example: 'Tran' },
+        parentFirstName: { type: 'string', maxLength: 255, example: 'Van Hung' },
         parentAddress: { type: 'string', maxLength: 500, example: '123 Nguyen Trai' },
         parentDistrict: { type: 'string', maxLength: 30, example: 'Thanh Xuan' },
         parentProvince: { type: 'string', maxLength: 30, example: 'Ha Noi' },

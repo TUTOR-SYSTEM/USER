@@ -12,6 +12,7 @@ const USER_ID = '6f1c2b4e-9d3a-4c7e-8b21-0a1b2c3d4e5f';
 const OTHER_ID = '0b9e7d1a-2c3f-4a5b-9c8d-7e6f5a4b3c2d';
 const STUDENT: UserActor = { id: USER_ID, role: 'STUDENT' };
 const ADMIN: UserActor = { id: OTHER_ID, role: 'ADMIN' };
+const TUTOR: UserActor = { id: USER_ID, role: 'TUTOR' };
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -103,8 +104,21 @@ describe('UserService email verification', () => {
     });
   });
 
-  describe('self-update (PUT /users) cannot change the email', () => {
-    it('rejects an email change with 400 CANNOT_UPDATE_RESTRICTED_FIELDS and writes nothing', async () => {
+  describe('self-update (PUT /users) email change', () => {
+    it('lets a TUTOR change their own email and resets verification', async () => {
+      await service.updateOwnProfileService({
+        id: USER_ID,
+        actor: TUTOR,
+        data: { email: 'new@example.test' } as never,
+      });
+
+      expect(repo.update).toHaveBeenCalledWith(
+        USER_ID,
+        expect.objectContaining({ email: 'new@example.test', emailVerified: false }),
+      );
+    });
+
+    it('rejects a STUDENT email change with 400 STUDENT_CANNOT_UPDATE_EMAIL and writes nothing', async () => {
       const call = service.updateOwnProfileService({
         id: USER_ID,
         actor: STUDENT,
@@ -113,7 +127,7 @@ describe('UserService email verification', () => {
 
       await expect(call).rejects.toBeInstanceOf(BadRequestException);
       await expect(call).rejects.toMatchObject({
-        message: ERROR_MESSAGES.CANNOT_UPDATE_RESTRICTED_FIELDS,
+        message: ERROR_MESSAGES.STUDENT_CANNOT_UPDATE_EMAIL,
       });
       expect(repo.update).not.toHaveBeenCalled();
     });

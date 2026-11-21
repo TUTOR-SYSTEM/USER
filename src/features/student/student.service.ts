@@ -27,6 +27,30 @@ function omitPassword<T extends { password?: unknown }>(row: T): Omit<T, 'passwo
   return safe as Omit<T, 'password'>;
 }
 
+/** Gia sư quản lý (tóm tắt, không có password). */
+function toTutorSummary(
+  tutor: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    userCode: string | null;
+    email: string;
+    phone: string | null;
+    avatar: string | null;
+  } | null,
+) {
+  if (!tutor) return null;
+  return {
+    id: tutor.id,
+    firstName: tutor.firstName,
+    lastName: tutor.lastName,
+    userCode: tutor.userCode,
+    email: tutor.email,
+    phone: tutor.phone,
+    avatar: tutor.avatar,
+  };
+}
+
 function assertStudentId(id: string): void {
   if (!id || !checkUuidValid({ data: id })) {
     throw new BadRequestException(ERROR_MESSAGES.USER_ID_MUST_BE_UUID);
@@ -208,12 +232,25 @@ export class StudentService {
     return omitPassword(student);
   }
 
+  /** Lớp đã tham gia của từng học sinh, gom theo studentId. */
+  private async groupClassesByStudent(studentIds: string[]) {
+    const rows = await this.repo.findClassesByStudentIds({ studentIds });
+    const grouped = new Map<string, { id: string; name: string; code: string }[]>();
+    for (const { studentId, id, name, code } of rows) {
+      const list = grouped.get(studentId) ?? [];
+      list.push({ id, name, code });
+      grouped.set(studentId, list);
+    }
+    return grouped;
+  }
+
   async findAll(query: GetStudentsQueryDto, actor: UserActor) {
     assertStaff(actor);
     // A tutor's list is always scoped to their own students, whatever `tutorId` the query asks for.
     const scoped: GetStudentsQueryDto =
       actor.role === 'TUTOR' ? { ...query, tutorId: actor.id } : query;
     const { students, pagination } = await this.repo.getAllStudents({ query: scoped });
+    const classesById = await this.groupClassesByStudent(students.map((s) => s.id));
 
     return {
       students: students.map((s) => ({
@@ -232,6 +269,10 @@ export class StudentService {
         district: s.district,
         province: s.province,
         parentId: s.parentId,
+        tutorId: s.tutorId,
+        tutor: toTutorSummary(s.tutor),
+        classes: classesById.get(s.id) ?? [],
+        classCount: classesById.get(s.id)?.length ?? 0,
         parentName: s.parent ? `${s.parent.firstName} ${s.parent.lastName}`.trim() : null,
         parentPhone: s.parent?.phone ?? null,
         parentEmail: s.parent?.email ?? null,
@@ -268,6 +309,7 @@ export class StudentService {
     assertCanManage(actor, user);
 
     const parent = user.parent;
+    const classes = (await this.groupClassesByStudent([user.id])).get(user.id) ?? [];
 
     return {
       id: user.id,
@@ -286,6 +328,10 @@ export class StudentService {
       district: user.district,
       province: user.province,
       parentId: user.parentId,
+      tutorId: user.tutorId,
+      tutor: toTutorSummary(user.tutor),
+      classes,
+      classCount: classes.length,
       parentName: parent ? `${parent.firstName} ${parent.lastName}`.trim() : null,
       parentPhone: parent?.phone ?? null,
       parentEmail: parent?.email ?? null,
@@ -323,10 +369,24 @@ export class StudentService {
 
     // ── student fields ──
     const studentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
-    if (dto.studentName !== undefined) {
+    if (dto.firstName !== undefined || dto.lastName !== undefined) {
+      // Họ/Tên gửi riêng: chỉ ghi đè phần nào có mặt.
+      if (dto.firstName !== undefined) studentUpdate.firstName = dto.firstName;
+      if (dto.lastName !== undefined) studentUpdate.lastName = dto.lastName;
+    } else if (dto.studentName !== undefined) {
       const { firstName, lastName } = this.splitName(dto.studentName);
       studentUpdate.firstName = firstName;
       studentUpdate.lastName = lastName;
+    }
+    if (dto.tutorId !== undefined && dto.tutorId !== student.tutorId) {
+      // Chỉ ADMIN được chuyển học sinh sang gia sư khác.
+      if (actor.role !== 'ADMIN') throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+      const tutor = await this.repo.findTutorById({ id: dto.tutorId });
+      if (!tutor) throw new NotFoundException(ERROR_MESSAGES.TUTOR_NOT_FOUND);
+      if (await this.repo.hasEnrollmentWithOtherTutor({ studentId: id, tutorId: tutor.id })) {
+        throw new BadRequestException(ERROR_MESSAGES.CLASS_TUTOR_CONFLICT);
+      }
+      studentUpdate.tutorId = tutor.id;
     }
     if (dto.studentPhone !== undefined) studentUpdate.phone = dto.studentPhone || null;
     if (dto.gender !== undefined) studentUpdate.gender = dto.gender;
@@ -337,7 +397,7 @@ export class StudentService {
     if (dto.province !== undefined) studentUpdate.province = dto.province || null;
     if (dto.avatar !== undefined) studentUpdate.avatar = dto.avatar;
 
-    let updated: Omit<typeof student, 'parent'> = student;
+    let updated: Omit<typeof student, 'parent' | 'tutor'> = student;
     if (Object.keys(studentUpdate).length > 0) {
       updated = (await this.repo.update({ id, data: studentUpdate })) ?? student;
     }
@@ -345,6 +405,8 @@ export class StudentService {
     // ── parent fields ──
     const hasParentField =
       dto.parentName !== undefined ||
+      dto.parentLastName !== undefined ||
+      dto.parentFirstName !== undefined ||
       dto.parentPhone !== undefined ||
       dto.parentEmail !== undefined ||
       dto.parentRelationship !== undefined ||
@@ -361,7 +423,10 @@ export class StudentService {
     } else if (hasParentField) {
       if (student.parentId) {
         const parentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
-        if (dto.parentName !== undefined) {
+        if (dto.parentFirstName !== undefined || dto.parentLastName !== undefined) {
+          if (dto.parentFirstName !== undefined) parentUpdate.firstName = dto.parentFirstName;
+          if (dto.parentLastName !== undefined) parentUpdate.lastName = dto.parentLastName;
+        } else if (dto.parentName !== undefined) {
           const { firstName, lastName } = this.splitName(dto.parentName);
           parentUpdate.firstName = firstName;
           parentUpdate.lastName = lastName;
@@ -376,13 +441,16 @@ export class StudentService {
         if (Object.keys(parentUpdate).length > 0) {
           await this.repo.updateParent({ id: student.parentId, data: parentUpdate });
         }
-      } else if (dto.parentName) {
+      } else if (dto.parentName || dto.parentFirstName || dto.parentLastName) {
         // No parent linked yet — create one (mirrors create flow)
         const parentUserId = randomUUID();
         const parentCode = await this.generateUniqueCode();
         const hashedParentPassword = await hashData(generateRandomPassword());
         const resolvedParentEmail = dto.parentEmail ?? '';
-        const { firstName, lastName } = this.splitName(dto.parentName);
+        const { firstName, lastName } =
+          dto.parentFirstName || dto.parentLastName
+            ? { firstName: dto.parentFirstName ?? '', lastName: dto.parentLastName ?? '' }
+            : this.splitName(dto.parentName ?? '');
         const parentUsername = await this.generateUsernameFromName(firstName, lastName);
         const parent = await this.repo.createParent({
           id: parentUserId,

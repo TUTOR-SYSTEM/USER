@@ -2,7 +2,10 @@ import { Injectable } from '@nestjs/common';
 import type { GetStudentsQueryDto } from '@packages/entities/student';
 import { buildListWhereClause } from '@packages/helpers';
 import { PrismaService } from '../../database/database.module';
-import type { Prisma } from 'src/generated/prisma/client';
+import { Prisma } from 'src/generated/prisma/client';
+
+/** Lớp mà một học sinh đã tham gia (một dòng / cặp học sinh–lớp). */
+export type StudentClassRow = { studentId: string; id: string; name: string; code: string };
 
 /** Parent contact columns embedded in each student row of the list. */
 const parentSelect = {
@@ -17,6 +20,17 @@ const parentSelect = {
   address: true,
   district: true,
   province: true,
+} satisfies Prisma.UserSelect;
+
+/** Gia sư quản lý học sinh: chỉ các cột hiển thị, không có password. */
+const tutorSummarySelect = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  userCode: true,
+  email: true,
+  phone: true,
+  avatar: true,
 } satisfies Prisma.UserSelect;
 
 /** Student list columns — never includes the password hash. */
@@ -42,11 +56,26 @@ const studentListSelect = {
   createdAt: true,
   updatedAt: true,
   parent: { select: parentSelect },
+  tutor: { select: tutorSummarySelect },
 } satisfies Prisma.UserSelect;
 
 @Injectable()
 export class StudentRepository {
   constructor(private readonly db: PrismaService) {}
+
+  /**
+   * Quy tắc: gia sư quản lý học sinh = gia sư của lớp học sinh đang tham gia.
+   * true nếu học sinh đang thuộc một lớp có gia sư khác `tutorId` (null = chưa có gia sư).
+   */
+  async hasEnrollmentWithOtherTutor({ studentId, tutorId }: { studentId: string; tutorId: string | null }) {
+    const rows = await this.db.$queryRaw<{ n: bigint }[]>`
+      SELECT COUNT(*)::bigint AS n
+      FROM class_students cs
+      JOIN classes c ON c.id = cs.class_id
+      WHERE cs.student_id = ${studentId}::uuid
+        AND c.tutor_id IS DISTINCT FROM ${tutorId}::uuid`;
+    return Number(rows[0]?.n ?? 0) > 0;
+  }
 
   async createStudent(data: {
     id: string;
@@ -99,8 +128,11 @@ export class StudentRepository {
     const parent = row.parentId
       ? await this.db.user.findUnique({ where: { id: row.parentId } })
       : null;
+    const tutor = row.tutorId
+      ? await this.db.user.findUnique({ where: { id: row.tutorId }, select: tutorSummarySelect })
+      : null;
 
-    return { ...row, parent };
+    return { ...row, parent, tutor };
   }
 
   async update({ id, data }: { id: string; data: Prisma.UserUncheckedUpdateManyInput }) {
@@ -114,6 +146,24 @@ export class StudentRepository {
 
   async findTutorById({ id }: { id: string }) {
     return this.db.user.findFirst({ where: { id, role: 'TUTOR' } });
+  }
+
+  /**
+   * Lớp học sinh đã tham gia. `class_students` / `classes` do tutor-service ghi trên cùng DB,
+   * không có model Prisma ở repo này nên đọc bằng raw SQL.
+   */
+  async findClassesByStudentIds({
+    studentIds,
+  }: {
+    studentIds: string[];
+  }): Promise<StudentClassRow[]> {
+    if (studentIds.length === 0) return [];
+    return this.db.$queryRaw<StudentClassRow[]>`
+      SELECT cs.student_id AS "studentId", c.id, c.name, c.code
+      FROM class_students cs
+      JOIN classes c ON c.id = cs.class_id
+      WHERE cs.student_id IN (${Prisma.join(studentIds)})
+      ORDER BY c.name ASC`;
   }
 
   async updateParent({ id, data }: { id: string; data: Prisma.UserUncheckedUpdateManyInput }) {

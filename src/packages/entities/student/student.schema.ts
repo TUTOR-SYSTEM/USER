@@ -39,6 +39,11 @@ export const createStudentSchema = z.object({
 
 export const updateStudentSchema = z.object({
   studentName: z.string().min(1).max(255).optional(),
+  // Họ (lastName) và Tên (firstName) tách riêng; ưu tiên hơn `studentName` (giữ để tương thích ngược).
+  lastName: z.string().trim().min(1).max(255).optional(),
+  firstName: z.string().trim().min(1).max(255).optional(),
+  // Chuyển học sinh sang gia sư khác (chỉ ADMIN).
+  tutorId: z.string().uuid({ message: 'Tutor id must be uuid' }).optional(),
   studentPhone: z.string().max(20).optional(),
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
   birthday: z.coerce.date().optional(),
@@ -48,6 +53,9 @@ export const updateStudentSchema = z.object({
   province: z.string().max(30).optional(),
   parentId: z.string().uuid({ message: 'Parent id must be uuid' }).optional(),
   parentName: z.string().min(1).max(255).optional(),
+  // Họ/Tên phụ huynh tách riêng; ưu tiên hơn `parentName`.
+  parentLastName: z.string().trim().min(1).max(255).optional(),
+  parentFirstName: z.string().trim().min(1).max(255).optional(),
   parentPhone: z.string().max(20).optional(),
   parentEmail: z.string().trim().email('Invalid parent email').optional(),
   parentRelationship: z.enum(['FATHER', 'MOTHER', 'GUARDIAN']).optional(),

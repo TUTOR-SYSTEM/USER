@@ -9,7 +9,7 @@ const SEED_ACCOUNTS = [
     username: 'admin',
     firstName: 'Admin',
     lastName: 'Account',
-    password: 'Admin@123456',
+    password: 'Haidangphan123@',
     role: 'ADMIN' as const,
   },
   {
