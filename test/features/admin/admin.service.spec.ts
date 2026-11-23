@@ -55,6 +55,8 @@ describe('AdminService', () => {
       deleteByIdAndRole: jest.fn().mockResolvedValue(undefined),
       list: jest.fn().mockResolvedValue({ rows: [], pagination: { total: 0 } }),
       countLinkedUsers: jest.fn().mockResolvedValue(0),
+      countClassesByTutors: jest.fn().mockResolvedValue([]),
+      findStudentsByTutors: jest.fn().mockResolvedValue([]),
     };
     rmq = {
       send: jest.fn().mockResolvedValue({ deleted: 0 }),
@@ -416,6 +418,32 @@ describe('AdminService', () => {
 
       const values = repo.create.mock.calls[0][0] as Record<string, unknown>;
       expect(values.subjects).toBeUndefined();
+    });
+  });
+
+  describe('setTutorPassword', () => {
+    beforeEach(() => {
+      repo.findByIdAndRole.mockResolvedValue(row());
+      repo.updateByIdAndRole.mockResolvedValue(row());
+    });
+
+    it('stores a hashed password, revokes sessions and never returns the password', async () => {
+      const result = await service.setTutorPassword(USER_ID, 'Abcdef1!', ADMIN_ACTOR);
+
+      expect(result).toEqual({ id: USER_ID, passwordUpdated: true });
+      const [, role, data] = repo.updateByIdAndRole.mock.calls[0];
+      expect(role).toBe('TUTOR');
+      expect(data.password).toEqual(expect.any(String));
+      expect(data.password).not.toBe('Abcdef1!');
+      expect(JSON.stringify(result)).not.toContain('Abcdef1!');
+      expect(rmq.send).toHaveBeenCalled();
+    });
+
+    it('404s when the id is not a tutor and does not write', async () => {
+      repo.findByIdAndRole.mockResolvedValue(null);
+
+      await expect(service.setTutorPassword(USER_ID, 'Abcdef1!', ADMIN_ACTOR)).rejects.toThrow();
+      expect(repo.updateByIdAndRole).not.toHaveBeenCalled();
     });
   });
 

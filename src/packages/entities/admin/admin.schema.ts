@@ -97,3 +97,11 @@ export const listManagedUsersQuerySchema = z.object({
     .transform((value) => value === 'true')
     .optional(),
 });
+
+/** `PUT /admin/tutors/:id/password` — admin đặt mật khẩu mới cho gia sư. */
+export const setManagedPasswordSchema = z
+  .object({
+    password: managedPasswordSchema,
+  })
+  .strict();
+export type SetManagedPasswordDto = z.infer<typeof setManagedPasswordSchema>;

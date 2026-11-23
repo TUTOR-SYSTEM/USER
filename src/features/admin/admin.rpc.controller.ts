@@ -3,9 +3,11 @@ import { MessagePattern, Payload } from '@nestjs/microservices';
 import {
   createManagedUserSchema,
   listManagedUsersQuerySchema,
+  setManagedPasswordSchema,
   updateManagedStudentSchema,
   updateManagedUserSchema,
   type CreateManagedUserDto,
+  type SetManagedPasswordDto,
   type ListManagedUsersQueryDto,
   type UpdateManagedStudentDto,
   type UpdateManagedUserDto,
@@ -63,6 +65,14 @@ export class AdminRpcController {
   async deleteTutor(@Payload() payload: { id: string } & RpcActorPayload) {
     const { actor, rest } = splitRpcActor(payload);
     return this.adminService.deleteTutor(rest.id, actor);
+  }
+
+  @MessagePattern('admin.setTutorPassword')
+  async setTutorPassword(@Payload() payload: { id: string; password: string } & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    const { id, ...body } = rest;
+    const { password } = parseRpcPayload<SetManagedPasswordDto>(setManagedPasswordSchema, body);
+    return this.adminService.setTutorPassword(id, password, actor);
   }
 
   // ─── Students ──────────────────────────────────────────────────────

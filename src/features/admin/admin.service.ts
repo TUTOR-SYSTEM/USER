@@ -20,6 +20,8 @@ import { RmqProducer } from '../rabbitmq/rmq.producer';
 import type { UserActor } from '../user/user.service';
 import { AdminRepository, type ManagedRole } from './admin.repository';
 
+type TutorStudentSummary = { id: string; firstName: string; lastName: string };
+
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
@@ -56,6 +58,16 @@ export class AdminService {
   async deleteTutor(id: string, actor: UserActor) {
     this.assertAdmin(actor);
     return this.deleteManagedUser(id, 'TUTOR');
+  }
+
+  /** Admin đặt mật khẩu mới cho gia sư. Thu hồi mọi phiên đang đăng nhập của gia sư đó. Không trả mật khẩu. */
+  async setTutorPassword(id: string, password: string, actor: UserActor) {
+    this.assertAdmin(actor);
+    this.assertUuid(id);
+    await this.getManagedUser(id, 'TUTOR');
+    await this.adminRepository.updateByIdAndRole(id, 'TUTOR', { password: await hashData(password) });
+    await revokeAllUserSessions(this.rmqProducer, id);
+    return { id, passwordUpdated: true };
   }
 
   // ─── Students ──────────────────────────────────────────────────────
@@ -178,7 +190,39 @@ export class AdminService {
   private async listManagedUsers(role: ManagedRole, query: ListManagedUsersQueryDto) {
     const { rows, pagination } = await this.adminRepository.list({ role, ...query });
     const key = role === 'TUTOR' ? 'tutors' : 'students';
-    return { [key]: rows.map((row) => this.mapRow(row)), pagination };
+    const mapped = rows.map((row) => this.mapRow(row));
+    if (role === 'TUTOR') {
+      return { [key]: await this.attachTutorLoad(mapped), pagination };
+    }
+    return { [key]: mapped, pagination };
+  }
+
+  /** Gắn `classCount`, `studentCount` và toàn bộ `students` (theo tên) cho từng gia sư trong trang hiện tại. */
+  private async attachTutorLoad<T extends { id: string }>(tutors: T[]) {
+    const ids = tutors.map((t) => t.id);
+    const [classRows, studentRows] = await Promise.all([
+      this.adminRepository.countClassesByTutors(ids),
+      this.adminRepository.findStudentsByTutors(ids),
+    ]);
+
+    const classCounts = new Map(classRows.map((r) => [r.tutorId, r.classCount]));
+    const students = new Map<string, TutorStudentSummary[]>();
+    for (const s of studentRows) {
+      if (!s.tutorId) continue;
+      const list = students.get(s.tutorId) ?? [];
+      list.push({ id: s.id, firstName: s.firstName, lastName: s.lastName });
+      students.set(s.tutorId, list);
+    }
+
+    return tutors.map((tutor) => {
+      const list = students.get(tutor.id) ?? [];
+      return {
+        ...tutor,
+        classCount: classCounts.get(tutor.id) ?? 0,
+        studentCount: list.length,
+        students: list,
+      };
+    });
   }
 
   private async getManagedUser(id: string, role: ManagedRole) {
