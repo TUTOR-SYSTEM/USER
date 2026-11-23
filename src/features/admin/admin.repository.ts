@@ -53,6 +53,26 @@ export class AdminRepository {
     return Number(rows[0]?.n ?? 0) > 0;
   }
 
+  /** Số lớp mỗi gia sư đang dạy (`classes.tutor_id`). Gia sư không có lớp sẽ không xuất hiện. */
+  async countClassesByTutors(tutorIds: string[]) {
+    if (tutorIds.length === 0) return [];
+    return this.db.$queryRaw<{ tutorId: string; classCount: number }[]>`
+      SELECT c.tutor_id AS "tutorId", COUNT(*)::int AS "classCount"
+      FROM classes c
+      WHERE c.tutor_id = ANY(${tutorIds}::uuid[])
+      GROUP BY c.tutor_id`;
+  }
+
+  /** Toàn bộ học sinh (`users.tutor_id`, role STUDENT) của các gia sư trong trang hiện tại, theo tên. */
+  async findStudentsByTutors(tutorIds: string[]) {
+    if (tutorIds.length === 0) return [];
+    return this.db.user.findMany({
+      where: { role: 'STUDENT', tutorId: { in: tutorIds } },
+      select: { id: true, tutorId: true, firstName: true, lastName: true },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }, { id: 'asc' }],
+    });
+  }
+
   findByEmail(email: string) {
     return this.db.user.findMany({ where: { email }, select: { id: true }, take: 1 });
   }
