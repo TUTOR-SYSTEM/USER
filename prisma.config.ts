@@ -2,24 +2,27 @@ import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
 const {
-  DATABASE_URL,
-  POSTGRES_HOST,
-  POSTGRES_PORT,
-  POSTGRES_DB,
-  POSTGRES_USER,
+  POSTGRES_HOST = '127.0.0.1',
+  POSTGRES_PORT = '5432',
+  POSTGRES_DB = 'backends_db',
+  POSTGRES_USER = 'postgres',
   POSTGRES_PASSWORD,
 } = process.env;
 
-// Same resolution order as DatabaseModule: DATABASE_URL, else the discrete POSTGRES_* vars.
-const url =
-  DATABASE_URL?.trim() ||
-  (POSTGRES_HOST
-    ? `postgres://${encodeURIComponent(POSTGRES_USER ?? '')}:${encodeURIComponent(
-        POSTGRES_PASSWORD ?? '',
-      )}@${POSTGRES_HOST}:${POSTGRES_PORT ?? 5432}/${POSTGRES_DB}`
-    : 'postgres://placeholder:placeholder@localhost:5432/placeholder'); // `generate` needs no connection
+if (!POSTGRES_PASSWORD) {
+  throw new Error('POSTGRES_PASSWORD is required');
+}
+
+const url = `postgresql://${encodeURIComponent(POSTGRES_USER)}:${encodeURIComponent(
+  POSTGRES_PASSWORD,
+)}@${POSTGRES_HOST}:${POSTGRES_PORT}/${encodeURIComponent(POSTGRES_DB)}`;
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
-  datasource: { url },
+  migrations: {
+    path: 'prisma/migrations',
+  },
+  datasource: {
+    url,
+  },
 });
