@@ -50,20 +50,20 @@ describe('UserController', () => {
   };
 
   describe('route table', () => {
-    it('mounts under /users', () => {
-      expect(Reflect.getMetadata(PATH_METADATA, UserController)).toBe('users');
+    it('mounts under /user', () => {
+      expect(Reflect.getMetadata(PATH_METADATA, UserController)).toBe('user');
     });
 
     it.each<[keyof UserController, RequestMethod, string]>([
-      ['getUsers', RequestMethod.GET, '/'],
-      ['getDetailUserController', RequestMethod.GET, '/detail-user'],
-      ['getUserByField', RequestMethod.GET, '/get-by-field'],
-      ['createUser', RequestMethod.POST, '/'],
-      ['updateUserController', RequestMethod.PUT, ''],
-      ['updateUserByAdminController', RequestMethod.PUT, '/:id'],
-      ['updateStatusUserController', RequestMethod.PUT, '/:id/status'],
-      ['deleteUserByAdminController', RequestMethod.DELETE, '/:id'],
-      ['changePasswordController', RequestMethod.POST, '/change-password'],
+      ['getUsers', RequestMethod.GET, 'getUsers'],
+      ['getDetailUserController', RequestMethod.GET, 'getDetailUser'],
+      ['getUserByField', RequestMethod.GET, 'getUserByField'],
+      ['createUser', RequestMethod.POST, 'createUser'],
+      ['updateUserController', RequestMethod.PUT, 'updateUser'],
+      ['updateUserByAdminController', RequestMethod.PUT, 'updateUserByAdmin/:id'],
+      ['updateStatusUserController', RequestMethod.PUT, 'updateStatusUser/:id'],
+      ['deleteUserByAdminController', RequestMethod.DELETE, 'deleteUserByAdmin/:id'],
+      ['changePasswordController', RequestMethod.POST, 'changePassword'],
     ])('%s is %s %s', (name, method, path) => {
       const meta = handlerMeta(name);
       expect(meta.method).toBe(method);
@@ -173,10 +173,10 @@ describe('UserController', () => {
       });
     });
 
-    it('changePasswordController uses the caller id, never a body id', async () => {
+    it('changePasswordController uses the caller id and session, never a body id', async () => {
       const dto = { currentPassword: 'old', newPassword: 'new' } as never;
-      await controller.changePasswordController(ACTOR as never, dto);
-      expect(service.changePasswordService).toHaveBeenCalledWith(ACTOR.id, dto);
+      await controller.changePasswordController({ ...ACTOR, sid: 'sid-1' } as never, dto);
+      expect(service.changePasswordService).toHaveBeenCalledWith(ACTOR.id, dto, 'sid-1');
     });
 
     it('propagates service errors unchanged', async () => {

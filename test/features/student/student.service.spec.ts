@@ -10,6 +10,7 @@ import { StudentService } from 'src/features/student/student.service';
 import { StudentRepository } from 'src/features/student/student.repository';
 import { generateCode, generateRandomPassword, hashData } from '@packages/helpers';
 import type { JwtGuardUser } from 'src/packages/guards/jwt-auth.guard';
+import { RmqProducer } from 'src/features/rabbitmq/rmq.producer';
 
 jest.mock('@packages/helpers', () => ({
   ...jest.requireActual('@packages/helpers'),
@@ -43,10 +44,15 @@ function makeUsernameExists(usernameRowsPerCall: DbRows[] = []) {
 
 describe('StudentService', () => {
   let service: StudentService;
+  let rmq: { send: jest.Mock; emit: jest.Mock };
   let repo: {
     getStudentByField: jest.Mock;
     createParent: jest.Mock;
     createStudent: jest.Mock;
+    createStudentWithNewParent: jest.Mock;
+    createParentAndLinkStudent: jest.Mock;
+    findUserByEmail: jest.Mock;
+    getParents: jest.Mock;
     getAllStudents: jest.Mock;
     findById: jest.Mock;
     update: jest.Mock;
@@ -67,6 +73,10 @@ describe('StudentService', () => {
       getStudentByField: jest.fn().mockResolvedValue(undefined),
       createParent: jest.fn().mockImplementation(async (d) => ({ ...d, id: d.id })),
       createStudent: jest.fn().mockImplementation(async (d) => ({ ...d })),
+      createStudentWithNewParent: jest.fn().mockImplementation(async (_p, s) => ({ ...s })),
+      createParentAndLinkStudent: jest.fn().mockResolvedValue({ id: STUDENT_ID }),
+      findUserByEmail: jest.fn().mockResolvedValue(null),
+      getParents: jest.fn().mockResolvedValue({ parents: [], total: 0 }),
       getAllStudents: jest.fn(),
       findById: jest.fn(),
       update: jest.fn(),
@@ -78,11 +88,35 @@ describe('StudentService', () => {
       delete: jest.fn(),
       usernameExists: makeUsernameExists(usernameRows),
     };
+    rmq = { send: jest.fn(), emit: jest.fn() };
     const moduleRef = await Test.createTestingModule({
-      providers: [StudentService, { provide: StudentRepository, useValue: repo }],
+      providers: [
+        StudentService,
+        { provide: StudentRepository, useValue: repo },
+        { provide: RmqProducer, useValue: rmq },
+      ],
     }).compile();
     service = moduleRef.get(StudentService);
   };
+
+  describe('setPassword', () => {
+    const STUDENT_ID = '33333333-3333-4333-8333-333333333333';
+    const ADMIN_ACTOR = { id: '55555555-5555-4555-8555-555555555555', role: 'ADMIN' as const };
+
+    it('ends every session of the student, not only the password change', async () => {
+      await build();
+      repo.findById.mockResolvedValue({ id: STUDENT_ID, tutorId: null });
+
+      await service.setPassword(STUDENT_ID, 'New-pass-1', ADMIN_ACTOR);
+
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', {
+        prefix: `session:${STUDENT_ID}:`,
+      });
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', {
+        prefix: `refresh:${STUDENT_ID}:`,
+      });
+    });
+  });
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -168,9 +202,7 @@ describe('StudentService', () => {
 
     it('rejects an explicit userCode that is already taken, without inserting', async () => {
       repo.getStudentByField.mockResolvedValueOnce({ id: 'someone' });
-      const err = await service
-        .create({ ...baseDto, userCode: 'STU001' }, TUTOR)
-        .catch((e) => e);
+      const err = await service.create({ ...baseDto, userCode: 'STU001' }, TUTOR).catch((e) => e);
       expect(err).toBeInstanceOf(BadRequestException);
       expect(err.getResponse()).toMatchObject({
         message: ERROR_MESSAGES.VALIDATION_FAILED,
@@ -196,9 +228,13 @@ describe('StudentService', () => {
     });
 
     it('gives a parent without an email a unique placeholder (users.email is UNIQUE)', async () => {
-      await service.create({ studentName: 'Nguyen Van A', parentName: 'Tran Thi B' } as never, TUTOR);
-      expect(repo.createParent).toHaveBeenCalledWith(
+      await service.create(
+        { studentName: 'Nguyen Van A', parentName: 'Tran Thi B' } as never,
+        TUTOR,
+      );
+      expect(repo.createStudentWithNewParent).toHaveBeenCalledWith(
         expect.objectContaining({ email: 'tranthi_b@no-email.local' }),
+        expect.anything(),
       );
     });
 
@@ -233,8 +269,8 @@ describe('StudentService', () => {
       );
     });
 
-    it('throws Conflict when all 10 username candidates are taken', async () => {
-      await build(Array.from({ length: 10 }, () => [{ id: 'taken' }]));
+    it('throws Conflict when every sequential and random username candidate is taken', async () => {
+      await build(Array.from({ length: 15 }, () => [{ id: 'taken' }]));
       await expect(service.create({ studentName: 'Nguyen Van A' }, TUTOR)).rejects.toThrow(
         `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: Nguyen Van A`,
       );
@@ -282,7 +318,7 @@ describe('StudentService', () => {
         TUTOR,
       );
 
-      expect(repo.createParent).toHaveBeenCalledWith(
+      expect(repo.createStudentWithNewParent).toHaveBeenCalledWith(
         expect.objectContaining({
           firstName: 'Thi B',
           lastName: 'Tran',
@@ -294,8 +330,6 @@ describe('StudentService', () => {
           tutorId: TUTOR.id,
           password: 'hashed:Parent@123456',
         }),
-      );
-      expect(repo.createStudent).toHaveBeenCalledWith(
         expect.objectContaining({ parentId: expect.any(String), userCode: 'STUCODE' }),
       );
     });
@@ -309,18 +343,22 @@ describe('StudentService', () => {
         { studentName: 'A B', parentName: 'C D', parentRelationship: relationship as never },
         TUTOR,
       );
-      expect(repo.createParent).toHaveBeenCalledWith(expect.objectContaining({ gender }));
+      expect(repo.createStudentWithNewParent).toHaveBeenCalledWith(
+        expect.objectContaining({ gender }),
+        expect.anything(),
+      );
     });
 
     it('defaults parent phone/relationship to null and email to a unique placeholder', async () => {
       await service.create({ studentName: 'A B', parentName: 'C D' }, TUTOR);
-      expect(repo.createParent).toHaveBeenCalledWith(
+      expect(repo.createStudentWithNewParent).toHaveBeenCalledWith(
         expect.objectContaining({
           email: expect.stringMatching(/@no-email\.local$/),
           phone: null,
           relationship: null,
           gender: 'FEMALE',
         }),
+        expect.anything(),
       );
     });
 
@@ -416,7 +454,22 @@ describe('StudentService', () => {
 
     it('attaches joined classes, classCount and the managing tutor summary', async () => {
       repo.getAllStudents.mockResolvedValue({
-        students: [{ ...raw, tutorId: 'tutor-1', tutor: { id: 'tutor-1', firstName: 'Minh', lastName: 'Nguyen', userCode: 'T1', email: 't@x.com', phone: null, avatar: null, password: 'secret' } }],
+        students: [
+          {
+            ...raw,
+            tutorId: 'tutor-1',
+            tutor: {
+              id: 'tutor-1',
+              firstName: 'Minh',
+              lastName: 'Nguyen',
+              userCode: 'T1',
+              email: 't@x.com',
+              phone: null,
+              avatar: null,
+              password: 'secret',
+            },
+          },
+        ],
         pagination: { total: 1, page: 1, limit: 10, totalPages: 1 },
       });
       repo.findClassesByStudentIds.mockResolvedValue([
@@ -593,7 +646,7 @@ describe('StudentService', () => {
 
     const NEW_TUTOR_ID = '99999999-9999-4999-8999-999999999999';
 
-    it('refuses to move a student who is enrolled in another tutor\'s class', async () => {
+    it("refuses to move a student who is enrolled in another tutor's class", async () => {
       repo.findTutorById.mockResolvedValueOnce({ id: NEW_TUTOR_ID, role: 'TUTOR' });
       repo.hasEnrollmentWithOtherTutor.mockResolvedValueOnce(true);
 
@@ -707,7 +760,6 @@ describe('StudentService', () => {
 
     it('creates a parent and links it when none exists yet', async () => {
       mockedGenerateCode.mockReturnValueOnce('PARNEW');
-      repo.createParent.mockResolvedValue({ id: 'new-parent-id' });
       await service.update(
         STUDENT_ID,
         {
@@ -721,33 +773,35 @@ describe('StudentService', () => {
         ADMIN_ACTOR,
       );
 
-      expect(repo.createParent).toHaveBeenCalledWith(
-        expect.objectContaining({
+      // Parent and link are one transaction (no orphan PARENT if the link fails).
+      expect(repo.createParentAndLinkStudent).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        parent: expect.objectContaining({
           firstName: 'Thi E',
           lastName: 'Vu',
           userCode: 'PARNEW',
           relationship: 'MOTHER',
           gender: 'FEMALE',
           phone: '0988',
-          email: '',
+          // users.email is UNIQUE: a parent without an email gets a placeholder, never ''.
+          email: expect.stringMatching(/@no-email\.local$/),
           tutorId: TUTOR.id,
+          address: '1 Street',
+          district: 'D',
+          province: 'P',
         }),
-      );
-      expect(repo.updateParent).toHaveBeenCalledWith({
-        id: 'new-parent-id',
-        data: { address: '1 Street', district: 'D', province: 'P' },
       });
-      expect(repo.update).toHaveBeenCalledWith({
-        id: STUDENT_ID,
-        data: { parentId: 'new-parent-id' },
-      });
+      expect(repo.createParent).not.toHaveBeenCalled();
+      expect(repo.updateParent).not.toHaveBeenCalled();
     });
 
-    it('skips the address write for a newly created parent when no address fields are given', async () => {
-      repo.createParent.mockResolvedValue({ id: 'p2' });
+    it('stores null address fields for a newly created parent when none are given', async () => {
       await service.update(STUDENT_ID, { parentName: 'Vu Thi E' } as never, ADMIN_ACTOR);
       expect(repo.updateParent).not.toHaveBeenCalled();
-      expect(repo.update).toHaveBeenCalledWith({ id: STUDENT_ID, data: { parentId: 'p2' } });
+      expect(repo.createParentAndLinkStudent).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        parent: expect.objectContaining({ address: null, district: null, province: null }),
+      });
     });
 
     it('does nothing for parent fields when unlinked and parentName is empty', async () => {
@@ -845,7 +899,6 @@ describe('StudentService', () => {
 
     it('writes null for a blank new-parent address while keeping the district', async () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
-      repo.createParent.mockResolvedValue({ id: 'new-parent-2' });
 
       await service.update(
         STUDENT_ID,
@@ -857,16 +910,15 @@ describe('StudentService', () => {
         ADMIN_ACTOR,
       );
 
-      expect(repo.updateParent).toHaveBeenCalledWith({
-        id: 'new-parent-2',
-        data: { address: null, district: 'D', province: null },
+      expect(repo.createParentAndLinkStudent).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        parent: expect.objectContaining({ address: null, district: 'D', province: null }),
       });
     });
 
     it('falls back to the pre-update student row when the parent link write returns nothing', async () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
-      repo.createParent.mockResolvedValue({ id: 'new-parent-3' });
-      repo.update.mockResolvedValue(undefined);
+      repo.createParentAndLinkStudent.mockResolvedValue(undefined);
 
       const result = await service.update(
         STUDENT_ID,
@@ -898,7 +950,6 @@ describe('StudentService', () => {
 
     it('nulls blank district and province for a new parent while keeping a filled address', async () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
-      repo.createParent.mockResolvedValue({ id: 'new-parent-4' });
 
       await service.update(
         STUDENT_ID,
@@ -911,9 +962,9 @@ describe('StudentService', () => {
         ADMIN_ACTOR,
       );
 
-      expect(repo.updateParent).toHaveBeenCalledWith({
-        id: 'new-parent-4',
-        data: { address: '1 Street', district: null, province: null },
+      expect(repo.createParentAndLinkStudent).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        parent: expect.objectContaining({ address: '1 Street', district: null, province: null }),
       });
     });
 
@@ -930,7 +981,6 @@ describe('StudentService', () => {
 
     it('stores MALE for a newly created FATHER parent', async () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
-      repo.createParent.mockResolvedValue({ id: 'new-father' });
 
       await service.update(
         STUDENT_ID,
@@ -941,12 +991,14 @@ describe('StudentService', () => {
         ADMIN_ACTOR,
       );
 
-      expect(repo.createParent).toHaveBeenCalledWith(expect.objectContaining({ gender: 'MALE' }));
+      expect(repo.createParentAndLinkStudent).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        parent: expect.objectContaining({ gender: 'MALE' }),
+      });
     });
 
     it('writes only the provided address fields (others null) on a newly created parent', async () => {
       repo.findById.mockResolvedValue({ ...linked, parentId: null });
-      repo.createParent.mockResolvedValue({ id: 'new-parent' });
 
       await service.update(
         STUDENT_ID,
@@ -954,9 +1006,9 @@ describe('StudentService', () => {
         ADMIN_ACTOR,
       );
 
-      expect(repo.updateParent).toHaveBeenCalledWith({
-        id: 'new-parent',
-        data: { address: null, district: 'D', province: null },
+      expect(repo.createParentAndLinkStudent).toHaveBeenCalledWith({
+        studentId: STUDENT_ID,
+        parent: expect.objectContaining({ address: null, district: 'D', province: null }),
       });
     });
   });
@@ -1021,5 +1073,113 @@ describe('StudentService', () => {
       await expect(service.delete(STUDENT_ID, ADMIN_ACTOR)).resolves.toEqual({ id: STUDENT_ID });
       expect(repo.delete).toHaveBeenCalledWith({ id: STUDENT_ID });
     });
+
+    it('revokes every session of the deleted student', async () => {
+      repo.findById.mockResolvedValue({ id: STUDENT_ID });
+      repo.delete.mockResolvedValue(true);
+      await service.delete(STUDENT_ID, ADMIN_ACTOR);
+      const patterns = rmq.send.mock.calls.map((c) => c[0]);
+      expect(patterns).toEqual(['redis.set', 'redis.delByPrefix', 'redis.delByPrefix']);
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', {
+        prefix: `session:${STUDENT_ID}:`,
+      });
+    });
   });
+
+  describe('students sharing one parent', () => {
+    const OTHER_TUTOR_ID = '99999999-9999-4999-8999-999999999999';
+    const unlinked = { id: STUDENT_ID, tutorId: TUTOR.id, parentId: null, parent: null, tutor: null };
+
+    it('gives every parent created without an email its own placeholder (no shared "")', async () => {
+      repo.findById.mockResolvedValue(unlinked);
+      await service.update(STUDENT_ID, { parentName: 'Vu Thi E' } as never, ADMIN_ACTOR);
+      await service.update(STUDENT_ID, { parentName: 'Le Van G' } as never, ADMIN_ACTOR);
+      const emails = repo.createParentAndLinkStudent.mock.calls.map((c) => c[0].parent.email);
+      expect(emails[0]).toMatch(/@no-email\.local$/);
+      expect(emails[1]).toMatch(/@no-email\.local$/);
+      expect(emails[0]).not.toBe(emails[1]);
+    });
+
+    it('create: links the tutor\'s existing PARENT with the same email instead of a new account', async () => {
+      repo.findUserByEmail.mockResolvedValue({ id: PARENT_ID, role: 'PARENT', tutorId: TUTOR.id });
+      await service.create(
+        { studentName: 'Nguyen Van B', parentName: 'Tran Thi B', parentEmail: 'mom@example.com' },
+        TUTOR,
+      );
+      expect(repo.createStudentWithNewParent).not.toHaveBeenCalled();
+      expect(repo.createStudent).toHaveBeenCalledWith(expect.objectContaining({ parentId: PARENT_ID }));
+    });
+
+    it('create: an ADMIN may reuse any PARENT by email', async () => {
+      repo.findUserByEmail.mockResolvedValue({ id: PARENT_ID, role: 'PARENT', tutorId: OTHER_TUTOR_ID });
+      repo.findTutorById.mockResolvedValue({ id: TUTOR.id });
+      await service.create(
+        {
+          studentName: 'Nguyen Van B',
+          tutorId: TUTOR.id,
+          parentName: 'Tran Thi B',
+          parentEmail: 'mom@example.com',
+        },
+        ADMIN_ACTOR,
+      );
+      expect(repo.createStudent).toHaveBeenCalledWith(expect.objectContaining({ parentId: PARENT_ID }));
+    });
+
+    it.each([
+      ['another tutor\'s PARENT', { id: PARENT_ID, role: 'PARENT', tutorId: '99999999-9999-4999-8999-999999999999' }],
+      ['a non-PARENT account', { id: PARENT_ID, role: 'TUTOR', tutorId: null }],
+    ])('create: a parent email held by %s is a field-level duplicate', async (_n, holder) => {
+      repo.findUserByEmail.mockResolvedValue(holder);
+      await expect(
+        service.create(
+          { studentName: 'Nguyen Van B', parentName: 'Tran Thi B', parentEmail: 'taken@example.com' },
+          TUTOR,
+        ),
+      ).rejects.toMatchObject({
+        response: { errors: [expect.objectContaining({ field: 'parentEmail', code: 'duplicate' })] },
+      });
+      expect(repo.createStudent).not.toHaveBeenCalled();
+      expect(repo.createStudentWithNewParent).not.toHaveBeenCalled();
+    });
+
+    it('update: links an unlinked student to the existing PARENT with that email', async () => {
+      repo.findById.mockResolvedValue(unlinked);
+      repo.findUserByEmail.mockResolvedValue({ id: PARENT_ID, role: 'PARENT', tutorId: TUTOR.id });
+      repo.update.mockResolvedValue({ id: STUDENT_ID, parentId: PARENT_ID });
+      await service.update(
+        STUDENT_ID,
+        { parentName: 'Tran Thi B', parentEmail: 'mom@example.com' } as never,
+        ADMIN_ACTOR,
+      );
+      expect(repo.createParentAndLinkStudent).not.toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledWith({ id: STUDENT_ID, data: { parentId: PARENT_ID } });
+    });
+
+    describe('findParents (parent picker)', () => {
+      it('scopes a TUTOR to their own parents and hides placeholder emails', async () => {
+        repo.getParents.mockResolvedValue({
+          parents: [
+            { id: PARENT_ID, email: 'tran@no-email.local', firstName: 'B', lastName: 'Tran', phone: null, avatar: null, role: 'PARENT', isActive: true, createdAt: new Date('2026-01-01T00:00:00Z') },
+          ],
+          total: 1,
+        });
+        const result = await service.findParents({ page: 1, limit: 20, search: 'tran' }, TUTOR);
+        expect(repo.getParents).toHaveBeenCalledWith(expect.objectContaining({ ownerTutorId: TUTOR.id, search: 'tran' }));
+        expect(result.parents[0].email).toBeNull();
+        expect(result.parents[0].createdAt).toBe('2026-01-01T00:00:00.000Z');
+        expect(result.pagination).toEqual({ total: 1, page: 1, limit: 20, totalPages: 1 });
+      });
+
+      it('lets an ADMIN list every parent', async () => {
+        await service.findParents({ page: 1, limit: 20 }, ADMIN_ACTOR);
+        expect(repo.getParents).toHaveBeenCalledWith(expect.objectContaining({ ownerTutorId: undefined }));
+      });
+
+      it('refuses a PARENT or STUDENT caller', async () => {
+        await expect(service.findParents({ page: 1, limit: 20 }, { id: PARENT_ID, role: 'PARENT' })).rejects.toThrow();
+        expect(repo.getParents).not.toHaveBeenCalled();
+      });
+    });
+  });
+
 });

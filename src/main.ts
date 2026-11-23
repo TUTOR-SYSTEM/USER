@@ -15,8 +15,13 @@ import { TraceContextInterceptor } from '@packages/interceptor';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { setLogSink } from '@packages/context/log-sink';
 import { RmqProducer } from './features/rabbitmq/rmq.producer';
+import { RpcActorReplayInterceptor } from './features/rabbitmq/rpc-actor-replay.interceptor';
 
 async function bootstrap() {
+  // Without this secret every RPC actor is unverifiable and every user-acting call is refused.
+  if (!process.env.RPC_ACTOR_SECRET?.trim()) {
+    throw new Error('RPC_ACTOR_SECRET must be set (shared with gateway)');
+  }
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
@@ -51,7 +56,11 @@ async function bootstrap() {
   rmqMicroservice.useGlobalFilters(new RpcExceptionFilter());
   // Opens the correlationId/traceId/serviceName RequestContext for every @MessagePattern
   // handler — see [[rmq-rpc-plumbing]] memory.
-  rmqMicroservice.useGlobalInterceptors(new TraceContextInterceptor());
+  // The replay guard runs after the trace context is open, so its rejections are traced too (#5).
+  rmqMicroservice.useGlobalInterceptors(
+    new TraceContextInterceptor(),
+    new RpcActorReplayInterceptor(rmqProducer),
+  );
   await app.startAllMicroservices();
   Logger.log(
     `[USER] RabbitMQ listener bound (queue "${process.env.USER_QUEUE ?? 'user_queue'}")`,

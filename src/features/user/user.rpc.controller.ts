@@ -1,5 +1,6 @@
-import { Controller } from '@nestjs/common';
+import { Controller, ForbiddenException } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
+import { ERROR_MESSAGES } from 'src/data/constants';
 import {
   changePasswordSchema,
   createUserSchema,
@@ -117,11 +118,20 @@ export class UserRpcController {
     });
   }
 
+  /** Only the caller may change their own password: `userId` must be the forwarded actor. */
   @MessagePattern('user.changePassword')
-  async changePassword(@Payload() { userId, ...dto }: { userId: string } & ChangePasswordValues) {
+  async changePassword(
+    @Payload() payload: { userId: string } & ChangePasswordValues & RpcActorPayload,
+  ) {
+    const { actor, rest } = splitRpcActor(payload);
+    const { userId, ...body } = rest;
+    if (actor.id === '' || actor.id !== userId) {
+      throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+    }
     return this.userService.changePasswordService(
       userId,
-      parseRpcPayload<ChangePasswordValues>(changePasswordSchema, dto),
+      parseRpcPayload<ChangePasswordValues>(changePasswordSchema, body),
+      actor.sid,
     );
   }
 }

@@ -48,6 +48,11 @@ function fakeRmq() {
         return { ok: true };
       case 'redis.get':
         return store.get(payload.key as string) ?? null;
+      case 'redis.getdel': {
+        const value = store.get(payload.key as string) ?? null;
+        store.delete(payload.key as string);
+        return value;
+      }
       case 'redis.exists':
         return store.has(payload.key as string);
       case 'redis.delByPrefix': {
@@ -247,6 +252,52 @@ describe('AuthService', () => {
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
     });
 
+    it('lets only one of two concurrent refreshes with the same token succeed', async () => {
+      const first = await login();
+      userService.getUserByField.mockResolvedValue([user()]);
+
+      const results = await Promise.allSettled([
+        service.refreshTokens({ refreshToken: first.refreshToken }),
+        service.refreshTokens({ refreshToken: first.refreshToken }),
+      ]);
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    });
+
+    it('a revoke that lands while a refresh is in flight wins: the new session is not kept', async () => {
+      const first = await login();
+      userService.getUserByField.mockResolvedValue([user()]);
+      const original = rmq.send.getMockImplementation()!;
+      let fired = false;
+      rmq.send.mockImplementation(async (pattern: string, payload: Record<string, unknown>) => {
+        const result = await original(pattern, payload);
+        // Right after the refresh writes its hash, a logout-all lands: marker first, then the deletes.
+        if (
+          !fired &&
+          pattern === 'redis.set' &&
+          String(payload.key).startsWith(`refresh:${USER_ID}:`)
+        ) {
+          fired = true;
+          await original('redis.set', {
+            key: `revoked-all:${USER_ID}`,
+            value: String(Date.now() + 1),
+            ttlSeconds: 60,
+          });
+          for (const key of [...rmq.store.keys()]) {
+            if (key.startsWith(`session:${USER_ID}:`) || key.startsWith(`refresh:${USER_ID}:`)) {
+              rmq.store.delete(key);
+            }
+          }
+        }
+        return result;
+      });
+
+      await expect(
+        service.refreshTokens({ refreshToken: first.refreshToken }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(sessionKeys()).toHaveLength(0);
+    });
+
     it('refuses a refresh for a deactivated account', async () => {
       const out = await login();
       userService.getUserByField.mockResolvedValue([user({ isActive: false })]);
@@ -328,6 +379,19 @@ describe('AuthService', () => {
       expect(userService.setEmailVerifiedService).toHaveBeenCalledWith({
         id: USER_ID,
         emailVerified: true,
+      });
+    });
+
+    it('a verify link works once: a second use is rejected', async () => {
+      rmq.store.set(
+        'verify-email:t3',
+        JSON.stringify({ userId: USER_ID, email: 'student@example.test' }),
+      );
+      userService.getUserByField.mockResolvedValue([user()]);
+      await service.verifyEmailService({ jti: 't3' } as never);
+
+      await expect(service.verifyEmailService({ jti: 't3' } as never)).rejects.toMatchObject({
+        message: ERROR_MESSAGES.INVALID_VERIFY_EMAIL_TOKEN,
       });
     });
 

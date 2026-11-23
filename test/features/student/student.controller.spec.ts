@@ -57,17 +57,17 @@ describe('StudentController', () => {
       };
     };
 
-    it('mounts under the plural /students prefix', () => {
-      expect(Reflect.getMetadata(PATH_METADATA, StudentController)).toBe('students');
+    it('mounts under the /student prefix', () => {
+      expect(Reflect.getMetadata(PATH_METADATA, StudentController)).toBe('student');
     });
 
     it.each<[keyof StudentController, RequestMethod, string | undefined]>([
-      ['generateStudentCodeController', RequestMethod.GET, 'get-student-code'],
-      ['create', RequestMethod.POST, undefined],
-      ['getAllStudents', RequestMethod.GET, undefined],
-      ['findById', RequestMethod.GET, ':id'],
-      ['update', RequestMethod.PUT, ':id'],
-      ['delete', RequestMethod.DELETE, ':id'],
+      ['generateStudentCodeController', RequestMethod.GET, 'generateCode'],
+      ['create', RequestMethod.POST, 'create'],
+      ['getAllStudents', RequestMethod.GET, 'findAll'],
+      ['findById', RequestMethod.GET, 'findById/:id'],
+      ['update', RequestMethod.PUT, 'update/:id'],
+      ['delete', RequestMethod.DELETE, 'delete/:id'],
     ])('%s is %s %s', (handler, method, path) => {
       const meta = routeOf(handler);
       expect(meta.method).toBe(method);

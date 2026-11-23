@@ -59,6 +59,40 @@ const studentListSelect = {
   tutor: { select: tutorSummarySelect },
 } satisfies Prisma.UserSelect;
 
+export type NewStudentInput = {
+  id: string;
+  email: string;
+  password: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  userCode: string | null;
+  phone: string | null;
+  avatar: string | null;
+  gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
+  dateOfBirth: Date | null;
+  school: string | null;
+  parentId: string | null;
+  tutorId: string | null;
+};
+
+export type NewParentInput = {
+  id: string;
+  email: string;
+  password: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  userCode: string | null;
+  phone: string | null;
+  relationship: string | null;
+  gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
+  tutorId: string | null;
+  address?: string | null;
+  district?: string | null;
+  province?: string | null;
+};
+
 @Injectable()
 export class StudentRepository {
   constructor(private readonly db: PrismaService) {}
@@ -77,39 +111,42 @@ export class StudentRepository {
     return Number(rows[0]?.n ?? 0) > 0;
   }
 
-  async createStudent(data: {
-    id: string;
-    email: string;
-    password: string;
-    username: string;
-    firstName: string;
-    lastName: string;
-    userCode: string | null;
-    phone: string | null;
-    avatar: string | null;
-    gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
-    dateOfBirth: Date | null;
-    school: string | null;
-    parentId: string | null;
-    tutorId: string | null;
-  }) {
+  async createStudent(data: NewStudentInput) {
     return this.db.user.create({ data: { ...data, role: 'STUDENT' } });
   }
 
-  async createParent(data: {
-    id: string;
-    email: string;
-    password: string;
-    username: string;
-    firstName: string;
-    lastName: string;
-    userCode: string | null;
-    phone: string | null;
-    relationship: string | null;
-    gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
-    tutorId: string | null;
-  }) {
+  async createParent(data: NewParentInput) {
     return this.db.user.create({ data: { ...data, role: 'PARENT' } });
+  }
+
+  /**
+   * Creates a PARENT and the STUDENT linked to it in one transaction, so a failing student insert
+   * (duplicate code/email) never leaves an orphan parent behind. `student.parentId` must be `parent.id`.
+   */
+  async createStudentWithNewParent(parent: NewParentInput, student: NewStudentInput) {
+    const [, createdStudent] = await this.db.$transaction([
+      this.db.user.create({ data: { ...parent, role: 'PARENT' } }),
+      this.db.user.create({ data: { ...student, role: 'STUDENT' } }),
+    ]);
+    return createdStudent;
+  }
+
+  /** Creates a PARENT and links an existing student to it in one transaction. */
+  async createParentAndLinkStudent({
+    studentId,
+    parent,
+  }: {
+    studentId: string;
+    parent: NewParentInput;
+  }) {
+    await this.db.$transaction([
+      this.db.user.create({ data: { ...parent, role: 'PARENT' } }),
+      this.db.user.updateMany({
+        where: { id: studentId, role: 'STUDENT' },
+        data: { parentId: parent.id, updatedAt: new Date() },
+      }),
+    ]);
+    return this.db.user.findUnique({ where: { id: studentId } });
   }
 
   /** Học sinh có `parentId` = phụ huynh (role STUDENT). */
@@ -142,6 +179,68 @@ export class StudentRepository {
   /** Existing PARENT user to link to a student; null when no PARENT has that id. */
   async findParentById({ id }: { id: string }) {
     return this.db.user.findFirst({ where: { id, role: 'PARENT' } });
+  }
+
+  /** Any account holding `email` — used to reuse a PARENT instead of failing on the UNIQUE index. */
+  async findUserByEmail({ email }: { email: string }) {
+    return this.db.user.findFirst({ where: { email }, select: { id: true, role: true, tutorId: true } });
+  }
+
+  /**
+   * PARENT accounts for the picker. `ownerTutorId` limits them to parents the tutor created or whose
+   * children the tutor manages; omit it (ADMIN) for all of them.
+   */
+  async getParents({
+    page,
+    limit,
+    search,
+    ownerTutorId,
+  }: {
+    page: number;
+    limit: number;
+    search?: string;
+    ownerTutorId?: string;
+  }) {
+    const conditions: Prisma.UserWhereInput[] = [{ role: 'PARENT' }];
+    const searchWhere = buildListWhereClause<Prisma.UserWhereInput>({
+      search,
+      searchableColumns: {
+        firstName: { column: 'firstName' },
+        lastName: { column: 'lastName' },
+        email: { column: 'email' },
+        phone: { column: 'phone' },
+        userCode: { column: 'userCode' },
+      },
+    });
+    if (searchWhere) conditions.push(searchWhere);
+    if (ownerTutorId) {
+      conditions.push({
+        OR: [{ tutorId: ownerTutorId }, { children: { some: { tutorId: ownerTutorId } } }],
+      });
+    }
+    const where: Prisma.UserWhereInput = { AND: conditions };
+
+    const [total, parents] = await Promise.all([
+      this.db.user.count({ where }),
+      this.db.user.findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          avatar: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+        },
+        orderBy: [{ firstName: 'asc' }, { id: 'asc' }],
+        take: limit,
+        skip: (page - 1) * limit,
+      }),
+    ]);
+    return { parents, total };
   }
 
   async findTutorById({ id }: { id: string }) {

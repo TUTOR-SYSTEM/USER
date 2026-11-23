@@ -34,12 +34,12 @@ function bearerToken(authorization: string | undefined): string | undefined {
 
 const JWT_ROLES: readonly JwtUserRole[] = ['STUDENT', 'ADMIN', 'TUTOR', 'PARENT'];
 
+/** An unknown role in a signed token is refused, never silently widened to a default role. */
 function parseJwtUserRole(value: unknown): JwtUserRole {
-  if (typeof value != 'string') throw new UnauthorizedException('Check role user failed ...');
   if (typeof value === 'string' && (JWT_ROLES as readonly string[]).includes(value)) {
     return value as JwtUserRole;
   }
-  return 'STUDENT';
+  throw new UnauthorizedException('Unauthorized ...');
 }
 
 function parseAccessPayload(decoded: unknown): JwtGuardUser {

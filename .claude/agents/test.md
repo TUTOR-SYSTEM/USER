@@ -80,6 +80,7 @@ bun run test:debug        # Debug tests with --inspect-brk
 import { Test } from '@nestjs/testing';
 import { StudentService } from '../../../src/features/student/student.service';
 import { StudentRepository } from '../../../src/features/student/student.repository';
+import { RmqProducer } from '../../../src/features/rabbitmq/rmq.producer';
 
 describe('StudentService', () => {
   let service: StudentService;
@@ -96,6 +97,8 @@ describe('StudentService', () => {
             updateStudent: jest.fn(),
           },
         },
+        // StudentService injects RmqProducer (session revoke on password set); mock it.
+        { provide: RmqProducer, useValue: { send: jest.fn(), emit: jest.fn() } },
       ],
     }).compile();
 

@@ -201,9 +201,12 @@ describe('AuthService atomic reset and per-account lockout', () => {
       );
 
       expect(locked).toBe(HttpStatus.TOO_MANY_REQUESTS);
+      // INCR is sent with no retry so a lost reply cannot count one failed sign-in twice.
       expect(rmq.send).toHaveBeenCalledWith(
         'redis.incr',
         expect.objectContaining({ windowSeconds: 900 }),
+        expect.any(Number),
+        0,
       );
     });
 
@@ -216,6 +219,20 @@ describe('AuthService atomic reset and per-account lockout', () => {
       }
 
       await expect(wrongPassword(service)).resolves.toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('counts per (client IP, account): another IP is not locked out by one IP failing', async () => {
+      const service = build();
+      userService.getUserByField.mockResolvedValue([]);
+      const fromIp = (ip: string) =>
+        statusOf(service.loginService({ email: EMAIL, password: 'wrong-password' }, ip));
+
+      for (let i = 0; i < 5; i++) {
+        await fromIp('10.0.0.1');
+      }
+
+      await expect(fromIp('10.0.0.1')).resolves.toBe(HttpStatus.TOO_MANY_REQUESTS);
+      await expect(fromIp('10.0.0.2')).resolves.toBe(HttpStatus.UNAUTHORIZED);
     });
 
     it('returns the lockout message key, not an account-specific one', async () => {
@@ -266,7 +283,21 @@ describe('AuthService atomic reset and per-account lockout', () => {
       expect(rmq.emit).toHaveBeenCalledWith('redis.del', {
         keys: [expect.stringMatching(/^login-fail:[0-9a-f]{64}$/)],
       });
-      expect([...rmq.store.keys()].some((k) => k.startsWith('login-fail:'))).toBe(false);
+      // The (IP, account) counter is cleared. The account-wide counter stays, on purpose (#4).
+      expect([...rmq.store.keys()].filter((k) => k.startsWith('login-fail:'))).toHaveLength(1);
+    });
+
+    it('locks an account across IPs after the account-wide limit, even if no single IP is locked', async () => {
+      const service = build({ LOGIN_ACCOUNT_MAX_ATTEMPTS: '3' });
+      userService.getUserByField.mockResolvedValue([]);
+      const fromIp = (ip: string) =>
+        statusOf(service.loginService({ email: EMAIL, password: 'wrong-password' }, ip));
+
+      await fromIp('10.0.0.1');
+      await fromIp('10.0.0.2');
+      await fromIp('10.0.0.3');
+
+      await expect(fromIp('10.0.0.4')).resolves.toBe(HttpStatus.TOO_MANY_REQUESTS);
     });
 
     it('never stores the email in plain text in the counter key', async () => {

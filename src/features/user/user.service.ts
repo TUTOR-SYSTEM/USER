@@ -21,7 +21,21 @@ import type {
   UserDataFieldDto,
   User,
 } from '@packages/entities/user';
-import { checkUuidValid, compareData, hashData, revokeAllUserSessions } from '@packages/helpers';
+import {
+  checkUuidValid,
+  compareData,
+  pickFreeUsername,
+  usernameBase,
+  hashData,
+  hashRefreshToken,
+  refreshHashRedisKey,
+  revokeAllUserSessions,
+  sessionRedisKey,
+  signRefreshToken,
+} from '@packages/helpers';
+import { getJwtTokensConfig } from '@packages/configs/jwt-sign.config';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { ERROR_MESSAGES } from 'src/data/constants';
 
 /**
@@ -95,6 +109,8 @@ function providedCreateFields(dto: CreateUserInput): Record<string, unknown> {
     'district',
     'province',
     'avatar',
+    'relationship',
+    'gradesId',
   ] as const;
   for (const key of candidates) {
     const value = dto[key];
@@ -141,21 +157,18 @@ export class UserService {
   constructor(
     private readonly userRepo: UserRepository,
     private readonly rmqProducer: RmqProducer,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
   // TODO: generate unique username from first/last name
   async generateUsername(firstName: string, lastName: string): Promise<string> {
-    const baseUsername = `${lastName}${firstName}`
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/\s+/g, '');
-
-    for (let i = 0; i < 10; i++) {
-      const candidate = i === 0 ? baseUsername : `${baseUsername}${i}`;
-      const existing = await this.getUserByField({ field: 'username', value: candidate });
-      if (existing.length === 0) return candidate;
-    }
+    const username = await pickFreeUsername(
+      usernameBase(firstName, lastName),
+      async (candidate) =>
+        (await this.getUserByField({ field: 'username', value: candidate })).length > 0,
+    );
+    if (username) return username;
 
     throw new ConflictException(
       `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME} for "${firstName} ${lastName}" after 10 attempts`,
@@ -253,7 +266,9 @@ export class UserService {
   ): Promise<CreateUserResponseDto> {
     if (actor.role === 'ADMIN') return this.createUserService(createUserDto);
     if (actor.role === 'TUTOR' && actor.id !== '') {
-      return this.createUserService({ ...createUserDto, role: 'STUDENT' });
+      // The student belongs to the tutor who created it: without `tutorId` the tutor could not
+      // read or manage the account afterwards.
+      return this.createUserService({ ...createUserDto, role: 'STUDENT', tutorId: actor.id });
     }
     throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
   }
@@ -285,16 +300,20 @@ export class UserService {
     }
 
     const id = randomUUID();
+    // Optional links must point at an existing account of the right role (never at a bad FK).
+    if (createUserDto.parentId) await this.assertLinkTarget(id, createUserDto.parentId, 'PARENT');
+    if (createUserDto.tutorId) await this.assertLinkTarget(id, createUserDto.tutorId, 'TUTOR');
     const hashedPassword = await hashData(password);
     const role = createUserDto.role ?? 'STUDENT';
     let userCode: string | undefined;
     if (role === 'TUTOR') {
-      userCode = generateUserCode();
-      for (let i = 0; i < 5; i++) {
-        const existing = await this.userRepo.findUserCode(userCode);
-        if (!existing) break;
-        userCode = generateUserCode();
+      // Only a code proven free is used. If none is found, fail the create instead of writing a
+      // code that may already exist (that would surface as a misleading "account exists" 409).
+      for (let i = 0; i < 10 && !userCode; i++) {
+        const candidate = generateUserCode();
+        if (!(await this.userRepo.findUserCode(candidate))) userCode = candidate;
       }
+      if (!userCode) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
     }
 
     if (!username) {
@@ -306,6 +325,8 @@ export class UserService {
         id,
         ...(userCode ? { userCode } : {}),
         ...providedCreateFields(createUserDto),
+        ...(createUserDto.parentId ? { parentId: createUserDto.parentId } : {}),
+        ...(createUserDto.tutorId ? { tutorId: createUserDto.tutorId } : {}),
         email,
         username: resolvedUsername!,
         firstName,
@@ -432,7 +453,12 @@ export class UserService {
     if (!user) {
       throw new NotFoundException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
-    if (user.isActive === isActive) return omitPassword(user);
+    if (user.isActive === isActive) {
+      // Idempotent, but a deactivation whose revoke failed earlier must still be able to finish:
+      // the account is already inactive, so a plain retry would otherwise leave its sessions alive.
+      if (!isActive) await this.revokeAllSessions(id);
+      return omitPassword(user);
+    }
     if (actor.id === id) {
       throw new ConflictException(ERROR_MESSAGES.CANNOT_MODIFY_OWN_STATUS);
     }
@@ -475,8 +501,15 @@ export class UserService {
     return { id };
   }
 
-  // TODO: change password, verify current password first
-  async changePasswordService(userId: string, dto: ChangePasswordValues) {
+  /**
+   * Changes the caller's password. Every other device is signed out, and the current device (`sid`)
+   * stays signed in: its session is re-created and it gets a new refresh token. The refresh token
+   * is returned only so the gateway can store it in the httpOnly cookie. It is not a body field.
+   */
+  async changePasswordService(userId: string, dto: ChangePasswordValues, sid: string) {
+    if (!checkUuidValid({ data: sid })) {
+      throw new BadRequestException(ERROR_MESSAGES.INVALID_SESSION);
+    }
     const user = await this.userRepo.findWithPassword(userId);
     if (!user) {
       throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
@@ -489,8 +522,38 @@ export class UserService {
       throw new BadRequestException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);
     }
 
-    await this.updateUserPasswordService({ id: userId, password: dto.newPassword });
-    return { message: 'Password changed successfully' };
+    const [fresh] = await this.getUserByField({ field: 'id', value: userId });
+    if (!fresh) {
+      throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
+    }
+    const hashedPassword = await hashData(dto.newPassword);
+
+    // Order matters. Sessions are revoked first, so a Redis failure here leaves the password
+    // unchanged and the old sessions as they were. Writing the password first could leave it
+    // changed while the old sessions (possibly an attacker's) stay alive.
+    // Revoke ends every session, the current device included; it is re-created just below.
+    await this.revokeAllSessions(userId);
+    await this.userRepo.updatePassword(userId, hashedPassword);
+
+    const jwtTokensConfig = getJwtTokensConfig(this.configService);
+    const refreshToken = await signRefreshToken(
+      this.jwtService,
+      { sub: userId, email: fresh.email, sid },
+      jwtTokensConfig,
+    );
+    const ttlSeconds = jwtTokensConfig.refreshExpiresIn;
+    await this.rmqProducer.send('redis.set', {
+      key: sessionRedisKey(userId, sid),
+      value: '1',
+      ttlSeconds,
+    });
+    await this.rmqProducer.send('redis.set', {
+      key: refreshHashRedisKey(userId, sid),
+      value: hashRefreshToken(refreshToken),
+      ttlSeconds,
+    });
+
+    return { message: 'Password changed successfully', refreshToken };
   }
 
   // ─── helpers ──────────────────────────────────────────────────────
@@ -573,12 +636,19 @@ export class UserService {
       const taken = await this.getUserByField({ field: 'username', value: data.username });
       if (taken.length > 0) throw new ConflictException(ERROR_MESSAGES.USERNAME_EXISTS);
     }
+    // `users.userCode` has no unique index: two accounts sharing a code make code login ambiguous.
+    if (data.userCode && data.userCode !== user.userCode) {
+      const taken = await this.userRepo.findUserCode(data.userCode);
+      if (taken && taken.id !== id) throw new ConflictException(ERROR_MESSAGES.STUDENT_CODE_EXISTS);
+    }
     if (data.parentId) await this.assertLinkTarget(id, data.parentId, 'PARENT');
     if (data.tutorId) await this.assertLinkTarget(id, data.tutorId, 'TUTOR');
 
     // An admin losing the ADMIN role or being deactivated must not be the last one left.
     const demotes = data.role !== undefined && data.role !== user.role;
     const deactivates = data.isActive === false && user.isActive === true;
+    // Revoke on every deactivation request, not only the first, so a retry after a failed revoke works.
+    const revokesSessions = data.isActive === false;
     if (user.role === 'ADMIN' && ((demotes && data.role !== 'ADMIN') || deactivates)) {
       await this.assertNotLastActiveAdmin(user);
     }
@@ -591,7 +661,7 @@ export class UserService {
     });
 
     // A role change or deactivation must not leave the old access alive for up to the token TTL.
-    if (demotes || deactivates) await this.revokeAllSessions(id);
+    if (demotes || revokesSessions) await this.revokeAllSessions(id);
     return updated && omitPassword(updated);
   }
 }

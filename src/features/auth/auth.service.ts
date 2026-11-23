@@ -30,7 +30,10 @@ import {
   hashData,
   hashRefreshToken,
   refreshHashRedisKey,
+  revokedAllRedisKey,
+  revokedSessionRedisKey,
   safeEqualHex,
+  SESSION_REVOKED_MARKER_TTL_SECONDS,
   sessionRedisKey,
   signAccessToken,
   signRefreshToken,
@@ -59,9 +62,24 @@ const verifyEmailRedisKey = (jti: string) => `verify-email:${jti}`;
 
 /** Failed sign-ins allowed per account inside one window before the account is locked. */
 const LOGIN_MAX_ATTEMPTS_DEFAULT = 5;
+/**
+ * Failed sign-ins per account across all IPs in one window. Higher than the per-(IP, account) limit,
+ * so a single IP is still locked fast while distributed guessing hits a ceiling (#4).
+ */
+const LOGIN_ACCOUNT_MAX_ATTEMPTS_DEFAULT = 20;
+/** The account part of a lockout identifier (`account|ip:<ip>` → `account`). */
+const accountOf = (identifier: string): string => identifier.split('|ip:')[0];
 /** Length of the failure window, counted from the first failed attempt (the lock lifts after it). */
 const LOGIN_ATTEMPT_WINDOW_SECONDS_DEFAULT = 900;
-/** Hashed identifier: the Redis key never holds the email or user code in plain text. */
+/**
+ * Lockout is counted per (client IP, account). One IP cannot lock an account for every other IP,
+ * so an attacker who floods one account from their own address locks only themselves out. A missing
+ * IP (no gateway forwarding) falls into one shared bucket, which stays strict rather than open.
+ */
+const lockoutIdentifier = (account: string, clientIp?: string): string =>
+  `${account}|ip:${clientIp?.trim() || 'unknown'}`;
+
+/** Hashed identifier: the Redis key never holds the email, user code or IP in plain text. */
 const loginFailureRedisKey = (identifier: string) =>
   `login-fail:${createHash('sha256').update(identifier).digest('hex')}`;
 
@@ -145,6 +163,7 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly jwtTokensConfig: JwtTokensConfig;
   private readonly loginMaxAttempts: number;
+  private readonly loginAccountMaxAttempts: number;
   private readonly loginAttemptWindowSeconds: number;
   private dummyHash?: Promise<string>;
   constructor(
@@ -157,6 +176,10 @@ export class AuthService {
     this.loginMaxAttempts = positiveIntOr(
       configService.get<string>('LOGIN_MAX_ATTEMPTS'),
       LOGIN_MAX_ATTEMPTS_DEFAULT,
+    );
+    this.loginAccountMaxAttempts = positiveIntOr(
+      configService.get<string>('LOGIN_ACCOUNT_MAX_ATTEMPTS'),
+      LOGIN_ACCOUNT_MAX_ATTEMPTS_DEFAULT,
     );
     this.loginAttemptWindowSeconds = positiveIntOr(
       configService.get<string>('LOGIN_ATTEMPT_WINDOW_SECONDS'),
@@ -171,27 +194,36 @@ export class AuthService {
    * anyway, since the session is stored there.
    */
   private async assertLoginNotLocked(identifier: string): Promise<void> {
-    let failures: string | null;
-    try {
-      failures = await this.rmqProducer.send<string | null, { key: string }>(
-        'redis.get',
-        { key: loginFailureRedisKey(identifier) },
-        REDIS_READ_TIMEOUT_MS,
-        REDIS_READ_RETRIES,
-      );
-    } catch (error) {
-      this.logger.warn('Login lockout check unavailable', error);
-      return;
-    }
-    if (Number(failures ?? 0) >= this.loginMaxAttempts) {
-      const remainingSeconds = await this.getLoginLockRemainingSeconds(
-        loginFailureRedisKey(identifier),
-      );
-      const minutes = Math.max(1, Math.ceil(remainingSeconds / 60));
-      throw new HttpException(
-        `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: ${minutes} phút`,
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
+    // Two counters: (IP, account) with the normal limit, and the account alone with a higher one.
+    // The account-wide counter stops one account being guessed from many IPs (#4).
+    const checks = [
+      { key: loginFailureRedisKey(identifier), max: this.loginMaxAttempts },
+      {
+        key: loginFailureRedisKey(accountOf(identifier)),
+        max: this.loginAccountMaxAttempts,
+      },
+    ];
+    for (const { key, max } of checks) {
+      let failures: string | null;
+      try {
+        failures = await this.rmqProducer.send<string | null, { key: string }>(
+          'redis.get',
+          { key },
+          REDIS_READ_TIMEOUT_MS,
+          REDIS_READ_RETRIES,
+        );
+      } catch (error) {
+        this.logger.warn('Login lockout check unavailable', error);
+        return;
+      }
+      if (Number(failures ?? 0) >= max) {
+        const remainingSeconds = await this.getLoginLockRemainingSeconds(key);
+        const minutes = Math.max(1, Math.ceil(remainingSeconds / 60));
+        throw new HttpException(
+          `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: ${minutes} phút`,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
     }
   }
 
@@ -220,10 +252,18 @@ export class AuthService {
   /** Counts one failed sign-in in the window that starts at the first failure (atomic on Redis). */
   private async recordLoginFailure(identifier: string): Promise<void> {
     try {
-      await this.rmqProducer.send('redis.incr', {
-        key: loginFailureRedisKey(identifier),
-        windowSeconds: this.loginAttemptWindowSeconds,
-      });
+      // No retry: a retried INCR after a lost reply would count the same failed sign-in twice.
+      for (const key of [
+        loginFailureRedisKey(identifier),
+        loginFailureRedisKey(accountOf(identifier)),
+      ]) {
+        await this.rmqProducer.send(
+          'redis.incr',
+          { key, windowSeconds: this.loginAttemptWindowSeconds },
+          REDIS_READ_TIMEOUT_MS,
+          0,
+        );
+      }
     } catch (error) {
       this.logger.warn('Failed to record a failed sign-in', error);
     }
@@ -256,10 +296,6 @@ export class AuthService {
     return verified;
   }
 
-  /**
-   * Single generic error for unknown user and wrong password (no account enumeration). A dummy
-   * bcrypt compare runs for unknown users so response time doesn't leak existence either.
-   */
   /**
    * Each failure has its own code so the client can tell the user what to fix. An unknown
    * account still runs a bcrypt compare against a dummy hash, so the response time does not
@@ -325,6 +361,12 @@ export class AuthService {
 
   /** Deletes one session (both keys). Awaited: a logout must not be reported before it lands. */
   private async revokeSession(userId: string, sid: string): Promise<void> {
+    // Marker before the delete, so an in-flight refresh of this session that writes after it is caught.
+    await this.rmqProducer.send('redis.set', {
+      key: revokedSessionRedisKey(userId, sid),
+      value: String(Date.now()),
+      ttlSeconds: SESSION_REVOKED_MARKER_TTL_SECONDS,
+    });
     await this.rmqProducer.emit('redis.del', {
       keys: [sessionRedisKey(userId, sid), refreshHashRedisKey(userId, sid)],
     });
@@ -454,9 +496,9 @@ export class AuthService {
     };
   }
 
-  async loginService(loginDto: LoginDto): Promise<LoginResponseDto> {
+  async loginService(loginDto: LoginDto, clientIp?: string): Promise<LoginResponseDto> {
     const email = normalizeEmail(loginDto.email);
-    const identifier = `email:${email}`;
+    const identifier = lockoutIdentifier(`email:${email}`, clientIp);
     await this.assertLoginNotLocked(identifier);
 
     const [found] = await this.userService.getUserByField({
@@ -469,8 +511,11 @@ export class AuthService {
   }
 
   // TODO: login with userCode + password ...
-  async loginByUserCodeService(dto: LoginByUserCodeDto): Promise<LoginResponseDto> {
-    const identifier = `userCode:${dto.userCode}`;
+  async loginByUserCodeService(
+    dto: LoginByUserCodeDto,
+    clientIp?: string,
+  ): Promise<LoginResponseDto> {
+    const identifier = lockoutIdentifier(`userCode:${dto.userCode}`, clientIp);
     await this.assertLoginNotLocked(identifier);
 
     const rows = await this.userService.getUserByField({
@@ -551,8 +596,9 @@ export class AuthService {
       field: 'email',
       value: normalizeEmail(resetPasswordDto.email),
     });
-    // Unknown email and wrong code give the same answer, so the endpoint does not reveal accounts.
-    if (!user) {
+    // Unknown email, deactivated account and wrong code give the same answer, so the endpoint does
+    // not reveal accounts, and a deactivated account cannot reset its way back in.
+    if (!user || user.isActive === false) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
     }
 
@@ -592,8 +638,9 @@ export class AuthService {
   }
 
   async verifyEmailService(dto: VerifyEmailDto): Promise<VerifyEmailResponseDto> {
-    const key = verifyEmailRedisKey(dto.jti);
-    const token = parseVerifyEmailToken(await this.redisGet(key));
+    // Single use: GETDEL consumes the token in the same step that reads it, so a replayed link
+    // finds nothing (the earlier fire-and-forget delete left a window for reuse).
+    const token = parseVerifyEmailToken(await this.redisGetAndDelete(verifyEmailRedisKey(dto.jti)));
     if (!token) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_VERIFY_EMAIL_TOKEN);
     }
@@ -601,16 +648,11 @@ export class AuthService {
     // The token is for the address it was issued to. If the account's email changed since, the
     // link no longer proves anything about the current address.
     const [user] = await this.userService.getUserByField({ field: 'id', value: token.userId });
-    if (!user || user.email !== token.email) {
+    if (!user || user.email !== token.email || user.isActive === false) {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_VERIFY_EMAIL_TOKEN);
     }
 
     await this.userService.setEmailVerifiedService({ id: token.userId, emailVerified: true });
-
-    // Best-effort cleanup, same as reset-password: the email is already verified.
-    this.rmqProducer
-      .emit('redis.del', { keys: [key] })
-      .catch((error: unknown) => this.logger.warn(`Failed to delete verify token ${key}`, error));
 
     return { ok: true };
   }
@@ -704,6 +746,8 @@ export class AuthService {
    * hash there is nothing to verify the token against.
    */
   async refreshTokens(dto: RefreshTokenBodyDto): Promise<LoginResponseDto> {
+    // Taken first: any revoke marker at or after this moment means the revoke happened mid-refresh.
+    const startedAt = Date.now();
     let verified: unknown;
     try {
       verified = await this.jwtService.verifyAsync(dto.refreshToken, {
@@ -714,13 +758,21 @@ export class AuthService {
     }
 
     const payload = parseRefreshTokenPayload(verified);
-    const storedHash = await this.redisGet(refreshHashRedisKey(payload.sub, payload.sid));
+    // Consume the stored hash in one step (GETDEL). Of two concurrent refreshes that present the same
+    // token, only one can take the hash, so a replayed token cannot mint a second pair.
+    const storedHash = await this.redisGetAndDelete(refreshHashRedisKey(payload.sub, payload.sid));
     if (!storedHash) {
       throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
     }
     if (!safeEqualHex(storedHash, hashRefreshToken(dto.refreshToken))) {
       this.logger.warn(`Refresh token reuse for user ${payload.sub}, revoking session`);
       await this.revokeSession(payload.sub, payload.sid);
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+    }
+    // A logout, password change or deactivation that landed while this refresh was in flight must
+    // win: re-check the session before minting a new one, so it is not written back to life.
+    const sessionStillOpen = await this.redisGet(sessionRedisKey(payload.sub, payload.sid));
+    if (!sessionStillOpen) {
       throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
     }
 
@@ -738,7 +790,19 @@ export class AuthService {
       throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_DEACTIVATED);
     }
     // Same session id, new refresh token: the stored hash is replaced, so the old one is dead.
-    return this.issueTokens(user, payload.sid);
+    const issued = await this.issueTokens(user, payload.sid);
+
+    // A revoke (logout, password change, deactivation) that ran while this refresh was in flight wins.
+    // It wrote its marker after `startedAt`, so the session written above must not survive.
+    const [allRevokedAt, sessionRevokedAt] = await Promise.all([
+      this.redisGet(revokedAllRedisKey(payload.sub)),
+      this.redisGet(revokedSessionRedisKey(payload.sub, payload.sid)),
+    ]);
+    if (Number(allRevokedAt ?? 0) >= startedAt || Number(sessionRevokedAt ?? 0) >= startedAt) {
+      await this.revokeSession(payload.sub, payload.sid);
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_OR_EXPIRED_REFRESH_TOKEN);
+    }
+    return issued;
   }
 
   /** `auth.logout`: ends one session (this device). Other devices keep their sessions. */

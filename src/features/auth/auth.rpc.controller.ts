@@ -1,5 +1,14 @@
-import { Controller } from '@nestjs/common';
+import { Controller, ForbiddenException } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
+import { ERROR_MESSAGES } from 'src/data/constants';
+import { RpcActorPayload, splitClientIp, splitRpcActor } from '@packages/helpers';
+
+/** Gateway-forwarded client IP and its signature (login only). */
+type ClientIpPayload = {
+  clientIp?: string;
+  clientIpSig?: string;
+  clientIpSigTs?: number;
+};
 import { verifyEmailSchema } from '@packages/entities/auth';
 import type {
   ForgotPasswordDto,
@@ -33,14 +42,22 @@ export class AuthRpcController {
     return this.authService.registerService(registerDto);
   }
 
+  /**
+   * The gateway's client IP keys the per-IP lockout counter. It is used only when the gateway
+   * signature on it verifies (`splitClientIp`); otherwise the shared bucket applies.
+   */
   @MessagePattern('auth.login')
-  login(@Payload() loginDto: LoginDto): Promise<LoginResponseDto> {
-    return this.authService.loginService(loginDto);
+  login(@Payload() payload: LoginDto & ClientIpPayload): Promise<LoginResponseDto> {
+    const { clientIp, rest } = splitClientIp(payload);
+    return this.authService.loginService(rest, clientIp);
   }
 
   @MessagePattern('auth.loginByUserCode')
-  loginByUserCode(@Payload() dto: LoginByUserCodeDto): Promise<LoginResponseDto> {
-    return this.authService.loginByUserCodeService(dto);
+  loginByUserCode(
+    @Payload() payload: LoginByUserCodeDto & ClientIpPayload,
+  ): Promise<LoginResponseDto> {
+    const { clientIp, rest } = splitClientIp(payload);
+    return this.authService.loginByUserCodeService(rest, clientIp);
   }
 
   @MessagePattern('auth.refresh')
@@ -50,8 +67,15 @@ export class AuthRpcController {
 
   /** Ends one login session (the device identified by `sid`). Called by the gateway's `POST /auth/logout`. */
   @MessagePattern('auth.logout')
-  logout(@Payload() dto: { userId: string; sid: string }): Promise<{ message: string }> {
-    return this.authService.logoutService(dto);
+  logout(
+    @Payload() payload: { userId: string; sid: string } & RpcActorPayload,
+  ): Promise<{ message: string }> {
+    const { actor, rest } = splitRpcActor(payload);
+    // Only the account's own session can be ended through the RPC: the actor must be that account.
+    if (actor.id === '' || actor.id !== rest.userId) {
+      throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+    }
+    return this.authService.logoutService({ userId: rest.userId, sid: rest.sid });
   }
 
   @MessagePattern('auth.forgotPassword')

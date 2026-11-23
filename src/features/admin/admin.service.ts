@@ -15,7 +15,14 @@ import type {
   UpdateManagedUserDto,
   UpdateManagedStudentDto,
 } from '@packages/entities/admin';
-import { checkUuidValid, generateCode, hashData, revokeAllUserSessions } from '@packages/helpers';
+import {
+  checkUuidValid,
+  generateCode,
+  hashData,
+  pickFreeUsername,
+  revokeAllUserSessions,
+  usernameBase,
+} from '@packages/helpers';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
 import type { UserActor } from '../user/user.service';
 import { AdminRepository, type ManagedRole } from './admin.repository';
@@ -344,17 +351,11 @@ export class AdminService {
   }
 
   private async generateUsername(firstName: string, lastName: string): Promise<string> {
-    const base = `${lastName}${firstName}`
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/\s+/g, '');
-
-    for (let i = 0; i < 10; i++) {
-      const candidate = i === 0 ? base : `${base}${i}`;
-      const [existing] = await this.adminRepository.findByUsername(candidate);
-      if (!existing) return candidate;
-    }
+    const username = await pickFreeUsername(
+      usernameBase(firstName, lastName),
+      async (candidate) => (await this.adminRepository.findByUsername(candidate)).length > 0,
+    );
+    if (username) return username;
     throw new ConflictException(
       `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: ${firstName} ${lastName}`,
     );

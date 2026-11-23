@@ -208,13 +208,10 @@ describe('JwtAuthGuard', () => {
       await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
     });
 
-    it('downgrades an unknown string role to STUDENT', async () => {
+    it('refuses an unknown string role instead of downgrading it to STUDENT', async () => {
       const { guard } = build({});
-      const { ctx, request } = makeContext(
-        bearer(signToken({ ...validPayload, role: 'SUPERUSER' })),
-      );
-      await guard.canActivate(ctx);
-      expect((request.user as { role: string }).role).toBe('STUDENT');
+      const { ctx } = makeContext(bearer(signToken({ ...validPayload, role: 'SUPERUSER' })));
+      await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
     it.each(['STUDENT', 'ADMIN', 'TUTOR', 'PARENT'])('keeps the known role %s', async (role) => {
