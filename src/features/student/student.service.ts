@@ -12,12 +12,26 @@ import { ERROR_MESSAGES } from 'src/data/constants';
 import type { Prisma } from '../../generated/prisma/client';
 import type {
   CreateStudentDto,
+  GetParentsQueryDto,
   GetStudentsQueryDto,
   UpdateStudentDto,
 } from '@packages/entities/student';
 import type { UserActor } from '../user/user.service';
-import { StudentRepository } from './student.repository';
-import { checkUuidValid, generateCode, generateRandomPassword, hashData } from '@packages/helpers';
+import {
+  StudentRepository,
+  type NewParentInput,
+  type NewStudentInput,
+} from './student.repository';
+import {
+  checkUuidValid,
+  generateCode,
+  generateRandomPassword,
+  hashData,
+  pickFreeUsername,
+  revokeAllUserSessions,
+  usernameBase,
+} from '@packages/helpers';
+import { RmqProducer } from '../rabbitmq/rmq.producer';
 import { randomUUID } from 'node:crypto';
 
 /** Response shape never carries the password hash (repository `.returning()` returns full rows). */
@@ -76,7 +90,10 @@ function assertCanManage(actor: UserActor, student: { tutorId: string | null }):
 @Injectable()
 export class StudentService {
   private readonly logger = new Logger(StudentService.name);
-  constructor(private readonly repo: StudentRepository) {}
+  constructor(
+    private readonly repo: StudentRepository,
+    private readonly rmqProducer: RmqProducer,
+  ) {}
 
   // TODO: generate unique code ...
   private async generateUniqueCode(): Promise<string> {
@@ -112,19 +129,18 @@ export class StudentService {
     };
   }
 
-  // TODO: generate username from full name ...
-  private async generateUsernameFromName(firstName: string, lastName: string): Promise<string> {
-    const base = `${lastName}${firstName}`
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/\s+/g, '_')
-      .replace(/[^a-z0-9_]/g, '');
-
-    for (let i = 0; i < 10; i++) {
-      const candidate = i === 0 ? base : `${base}_${i}`;
-      if (!(await this.repo.usernameExists(candidate))) return candidate;
-    }
+  /** `reserved`: usernames already picked in this request but not written yet. */
+  private async generateUsernameFromName(
+    firstName: string,
+    lastName: string,
+    reserved: string[] = [],
+  ): Promise<string> {
+    const username = await pickFreeUsername(
+      usernameBase(firstName, lastName, '_'),
+      async (candidate) => reserved.includes(candidate) || (await this.repo.usernameExists(candidate)),
+      '_',
+    );
+    if (username) return username;
 
     throw new ConflictException(
       `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: ${lastName} ${firstName}`,
@@ -163,7 +179,9 @@ export class StudentService {
         throw new BadRequestException({
           statusCode: HttpStatus.BAD_REQUEST,
           message: ERROR_MESSAGES.VALIDATION_FAILED,
-          errors: [{ field: 'userCode', message: ERROR_MESSAGES.STUDENT_CODE_EXISTS, code: 'duplicate' }],
+          errors: [
+            { field: 'userCode', message: ERROR_MESSAGES.STUDENT_CODE_EXISTS, code: 'duplicate' },
+          ],
         });
       }
       studentCode = dto.userCode;
@@ -174,48 +192,38 @@ export class StudentService {
     // 2. Split the student's full name into the first/last name columns `users` expects.
     const { firstName, lastName } = this.splitName(dto.studentName);
 
-    // 3. Generate a unique username. Password: the one the tutor/admin set, otherwise a random
-    // (never returned) one.
-    const studentUsername = await this.generateUsernameFromName(firstName, lastName);
-    const hashedStudentPassword = await hashData(dto.password ?? generateRandomPassword());
+    // Default password for the student: the one the tutor/admin set, otherwise a random (never returned) one.
+    const studentPassword = dto.password ?? generateRandomPassword();
 
-    // 4. Link an existing PARENT when `parentId` is given (no new account, its details stay as-is);
-    // otherwise, if parent info was submitted, create the PARENT user first so it can be linked below.
+    // 3. Prepare the new PARENT first (when parent info was submitted), so the student's username
+    // can avoid the parent's. An existing PARENT is linked by `parentId` and left as-is.
     let parentId: string | null = null;
+    let newParent: NewParentInput | null = null;
     if (dto.parentId) {
       const existingParent = await this.repo.findParentById({ id: dto.parentId });
       if (!existingParent) throw new NotFoundException(ERROR_MESSAGES.PARENT_NOT_FOUND);
       parentId = existingParent.id;
     } else if (dto.parentName) {
-      const { firstName: parentFirstName, lastName: parentLastName } = this.splitName(
-        dto.parentName,
-      );
-      const parentUsername = await this.generateUsernameFromName(parentFirstName, parentLastName);
-      const parentCode = await this.generateUniqueCode();
-      const hashedParentPassword = await hashData(dto.parentPassword ?? generateRandomPassword());
-
-      const parent = await this.repo.createParent({
-        id: randomUUID(),
-        // `users.email` is UNIQUE: a parent without an email gets a unique placeholder, like students do.
-        email: dto.parentEmail || `${parentUsername}@no-email.local`,
-        password: hashedParentPassword,
-        username: parentUsername,
-        firstName: parentFirstName,
-        lastName: parentLastName,
-        userCode: parentCode,
-        phone: dto.parentPhone ?? null,
-        relationship: dto.parentRelationship ?? null,
-        gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
-        tutorId,
-      });
-      parentId = parent.id;
+      // A parent email that already belongs to this tutor's PARENT means a sibling: link that one.
+      const sibling = await this.findLinkableParentByEmail(dto.parentEmail, tutorId, actor);
+      if (sibling) {
+        parentId = sibling.id;
+      } else {
+        newParent = await this.buildNewParent(dto, tutorId);
+        parentId = newParent.id;
+      }
     }
 
-    // 5. Create the student, linking the parent (if any) and the creating tutor/admin.
-    const student = await this.repo.createStudent({
+    // 4. Unique username for the student.
+    const studentUsername = await this.generateUsernameFromName(
+      firstName,
+      lastName,
+      newParent ? [newParent.username] : [],
+    );
+    const studentData: NewStudentInput = {
       id: randomUUID(),
       email: dto.email || `${studentUsername}@no-email.local`,
-      password: hashedStudentPassword,
+      password: await hashData(studentPassword),
       username: studentUsername,
       firstName,
       lastName,
@@ -227,9 +235,126 @@ export class StudentService {
       school: dto.school ?? null,
       parentId,
       tutorId,
-    });
+    };
+
+    // 5. Create the student, linking the parent (if any) and the creating tutor/admin. A new parent
+    // and the student are written in one transaction: no orphan PARENT if the student insert fails.
+    const student = newParent
+      ? await this.repo.createStudentWithNewParent(newParent, studentData)
+      : await this.repo.createStudent(studentData);
 
     return omitPassword(student);
+  }
+
+  /** Duplicate parent email → 400 with `errors[]` so the FE can mark the parent email input. */
+  private parentEmailTaken(): BadRequestException {
+    return new BadRequestException({
+      statusCode: HttpStatus.BAD_REQUEST,
+      message: ERROR_MESSAGES.VALIDATION_FAILED,
+      errors: [{ field: 'parentEmail', message: ERROR_MESSAGES.EMAIL_EXISTS, code: 'duplicate' }],
+    });
+  }
+
+  /**
+   * Siblings share one PARENT. If the submitted parent email already belongs to a PARENT the
+   * caller may use (ADMIN: any; TUTOR: one of their own), that parent is reused instead of
+   * failing on `users.email` UNIQUE. An email held by anyone else is a field-level duplicate.
+   */
+  private async findLinkableParentByEmail(
+    email: string | undefined,
+    managingTutorId: string | null,
+    actor: UserActor,
+  ): Promise<{ id: string } | null> {
+    if (!email) return null;
+    const existing = await this.repo.findUserByEmail({ email });
+    if (!existing) return null;
+    const usable =
+      existing.role === 'PARENT' && (actor.role === 'ADMIN' || existing.tutorId === managingTutorId);
+    if (!usable) throw this.parentEmailTaken();
+    return { id: existing.id };
+  }
+
+  /** A new PARENT row from the create form (not written yet). */
+  private async buildNewParent(dto: CreateStudentDto, tutorId: string | null): Promise<NewParentInput> {
+    const { firstName, lastName } = this.splitName(dto.parentName ?? '');
+    const username = await this.generateUsernameFromName(firstName, lastName);
+    return {
+      id: randomUUID(),
+      // `users.email` is UNIQUE: a parent without an email gets a unique placeholder, like students do.
+      email: dto.parentEmail || `${username}@no-email.local`,
+      password: await hashData(dto.parentPassword ?? generateRandomPassword()),
+      username,
+      firstName,
+      lastName,
+      userCode: await this.generateUniqueCode(),
+      phone: dto.parentPhone ?? null,
+      relationship: dto.parentRelationship ?? null,
+      gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
+      tutorId,
+    };
+  }
+
+  /**
+   * Student has no parent yet and the edit form carries parent details: link the tutor's existing
+   * PARENT with that email (sibling), or create a new PARENT and link it in one transaction.
+   */
+  private async linkOrCreateParent(
+    studentId: string,
+    student: { tutorId: string | null },
+    dto: UpdateStudentDto,
+    actor: UserActor,
+  ) {
+    const sibling = await this.findLinkableParentByEmail(dto.parentEmail, student.tutorId, actor);
+    if (sibling) return this.repo.update({ id: studentId, data: { parentId: sibling.id } });
+
+    const parentCode = await this.generateUniqueCode();
+    const hashedParentPassword = await hashData(generateRandomPassword());
+    const { firstName, lastName } =
+      dto.parentFirstName || dto.parentLastName
+        ? { firstName: dto.parentFirstName ?? '', lastName: dto.parentLastName ?? '' }
+        : this.splitName(dto.parentName ?? '');
+    const parentUsername = await this.generateUsernameFromName(firstName, lastName);
+    // `users.email` is UNIQUE, so a parent without an email gets a unique placeholder (never '').
+    return this.repo.createParentAndLinkStudent({
+      studentId,
+      parent: {
+        id: randomUUID(),
+        email: dto.parentEmail || `${parentUsername}@no-email.local`,
+        password: hashedParentPassword,
+        username: parentUsername,
+        firstName,
+        lastName,
+        userCode: parentCode,
+        phone: dto.parentPhone ?? null,
+        relationship: dto.parentRelationship ?? null,
+        gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
+        tutorId: student.tutorId,
+        address: dto.parentAddress || null,
+        district: dto.parentDistrict || null,
+        province: dto.parentProvince || null,
+      },
+    });
+  }
+
+  /** PARENT accounts the caller can attach to a student (picker): ADMIN all, TUTOR their own. */
+  async findParents(query: GetParentsQueryDto, actor: UserActor) {
+    assertStaff(actor);
+    const { page, limit, search } = query;
+    const { parents, total } = await this.repo.getParents({
+      page,
+      limit,
+      search,
+      ownerTutorId: actor.role === 'TUTOR' ? actor.id : undefined,
+    });
+    return {
+      parents: parents.map((p) => ({
+        ...p,
+        // A placeholder address is an implementation detail, never shown as a real email.
+        email: p.email.endsWith('@no-email.local') ? null : p.email,
+        createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+      })),
+      pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    };
   }
 
   /** Lớp đã tham gia của từng học sinh, gom theo studentId. */
@@ -380,7 +505,8 @@ export class StudentService {
     }
     if (dto.tutorId !== undefined && dto.tutorId !== student.tutorId) {
       // Chỉ ADMIN được chuyển học sinh sang gia sư khác.
-      if (actor.role !== 'ADMIN') throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+      if (actor.role !== 'ADMIN')
+        throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
       const tutor = await this.repo.findTutorById({ id: dto.tutorId });
       if (!tutor) throw new NotFoundException(ERROR_MESSAGES.TUTOR_NOT_FOUND);
       if (await this.repo.hasEnrollmentWithOtherTutor({ studentId: id, tutorId: tutor.id })) {
@@ -442,42 +568,8 @@ export class StudentService {
           await this.repo.updateParent({ id: student.parentId, data: parentUpdate });
         }
       } else if (dto.parentName || dto.parentFirstName || dto.parentLastName) {
-        // No parent linked yet — create one (mirrors create flow)
-        const parentUserId = randomUUID();
-        const parentCode = await this.generateUniqueCode();
-        const hashedParentPassword = await hashData(generateRandomPassword());
-        const resolvedParentEmail = dto.parentEmail ?? '';
-        const { firstName, lastName } =
-          dto.parentFirstName || dto.parentLastName
-            ? { firstName: dto.parentFirstName ?? '', lastName: dto.parentLastName ?? '' }
-            : this.splitName(dto.parentName ?? '');
-        const parentUsername = await this.generateUsernameFromName(firstName, lastName);
-        const parent = await this.repo.createParent({
-          id: parentUserId,
-          email: resolvedParentEmail,
-          password: hashedParentPassword,
-          username: parentUsername,
-          firstName,
-          lastName,
-          userCode: parentCode,
-          phone: dto.parentPhone ?? null,
-          relationship: dto.parentRelationship ?? null,
-          gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
-          tutorId: student.tutorId,
-        });
-        if (dto.parentAddress || dto.parentDistrict || dto.parentProvince) {
-          await this.repo.updateParent({
-            id: parent.id,
-            data: {
-              address: dto.parentAddress || null,
-              district: dto.parentDistrict || null,
-              province: dto.parentProvince || null,
-            },
-          });
-        }
-        // Link the newly created parent to the student — do NOT pass the parent's own
-        // record here, `repo.update` writes onto the student's row (`id`).
-        updated = (await this.repo.update({ id, data: { parentId: parent.id } })) ?? student;
+        // No parent linked yet: reuse the tutor's parent with this email (a sibling), else create one.
+        updated = (await this.linkOrCreateParent(id, student, dto, actor)) ?? student;
       }
     }
 
@@ -491,6 +583,8 @@ export class StudentService {
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     assertCanManage(actor, student);
     await this.repo.delete({ id });
+    // The account is gone: its access/refresh sessions must stop working at once (same as admin/user delete).
+    await revokeAllUserSessions(this.rmqProducer, id);
     return { id };
   }
 
@@ -502,6 +596,8 @@ export class StudentService {
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     assertCanManage(actor, student);
     await this.repo.update({ id, data: { password: await hashData(password) } });
+    // A new password must end every session the old one had (same as the tutor path).
+    await revokeAllUserSessions(this.rmqProducer, id);
     return { id, passwordUpdated: true };
   }
 

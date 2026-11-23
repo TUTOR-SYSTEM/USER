@@ -45,16 +45,16 @@ describe('route authorization metadata (HTTP controllers)', () => {
 
     it.each([
       // Self-service routes: any authenticated user, scoped by @CurrentUser() in the handler.
-      ['GET /', ['ADMIN']],
-      ['GET /detail-user', undefined],
-      ['PUT /', undefined],
-      ['POST change-password', undefined],
-      // Admin-by-id and admin-only lookups.
-      ['GET /get-by-field', ['ADMIN']],
-      ['POST /', ['ADMIN']],
-      ['PUT /:id', ['ADMIN']],
-      ['PUT /:id/status', ['ADMIN']],
-      ['DELETE /:id', ['ADMIN']],
+      ['GET getDetailUser', undefined],
+      ['PUT updateUser', undefined],
+      ['POST changePassword', undefined],
+      // Admin-only routes.
+      ['GET getUsers', ['ADMIN']],
+      ['GET getUserByField', ['ADMIN']],
+      ['POST createUser', ['ADMIN']],
+      ['PUT updateUserByAdmin/:id', ['ADMIN']],
+      ['PUT updateStatusUser/:id', ['ADMIN']],
+      ['DELETE deleteUserByAdmin/:id', ['ADMIN']],
     ])('%s requires %j', (key, roles) => {
       expect(table.has(key)).toBe(true);
       expect(table.get(key)).toEqual(roles);
@@ -63,15 +63,15 @@ describe('route authorization metadata (HTTP controllers)', () => {
     it('exposes no route that is missing from the matrix above', () => {
       expect([...table.keys()].sort()).toEqual(
         [
-          'GET /',
-          'GET /detail-user',
-          'PUT /',
-          'POST change-password',
-          'GET /get-by-field',
-          'POST /',
-          'PUT /:id',
-          'PUT /:id/status',
-          'DELETE /:id',
+          'GET getDetailUser',
+          'PUT updateUser',
+          'POST changePassword',
+          'GET getUsers',
+          'GET getUserByField',
+          'POST createUser',
+          'PUT updateUserByAdmin/:id',
+          'PUT updateStatusUser/:id',
+          'DELETE deleteUserByAdmin/:id',
         ].sort(),
       );
     });
@@ -91,16 +91,16 @@ describe('route authorization metadata (HTTP controllers)', () => {
     it('covers tutor and student CRUD endpoints', () => {
       expect([...table.keys()].sort()).toEqual(
         [
-          'POST tutors',
-          'GET tutors',
-          'GET tutors/:id',
-          'PUT tutors/:id',
-          'DELETE tutors/:id',
-          'POST students',
-          'GET students',
-          'GET students/:id',
-          'PUT students/:id',
-          'DELETE students/:id',
+          'POST createTutor',
+          'GET listTutors',
+          'GET getTutor/:id',
+          'PUT updateTutor/:id',
+          'DELETE deleteTutor/:id',
+          'POST createStudent',
+          'GET listStudents',
+          'GET getStudent/:id',
+          'PUT updateStudent/:id',
+          'DELETE deleteStudent/:id',
         ].sort(),
       );
     });

@@ -49,7 +49,8 @@ describe('ZodValidationPipe', () => {
   });
 
   it('keeps only the first issue per field', () => {
-    const multi = new ZodValidationPipe(z.object({ name: z.string().min(5).max(1) }));
+    // Two issues on the same field ('abc' is not digits and is shorter than 5); only the first is kept.
+    const multi = new ZodValidationPipe(z.object({ name: z.string().regex(/^\d+$/).min(5) }));
     try {
       multi.transform({ name: 'abc' });
       throw new Error('expected to throw');

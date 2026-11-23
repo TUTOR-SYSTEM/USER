@@ -51,16 +51,16 @@ describe('AdminController', () => {
 
   describe('route table', () => {
     it.each<[keyof AdminController, RequestMethod, string]>([
-      ['createTutor', RequestMethod.POST, 'tutors'],
-      ['listTutors', RequestMethod.GET, 'tutors'],
-      ['getTutor', RequestMethod.GET, 'tutors/:id'],
-      ['updateTutor', RequestMethod.PUT, 'tutors/:id'],
-      ['deleteTutor', RequestMethod.DELETE, 'tutors/:id'],
-      ['createStudent', RequestMethod.POST, 'students'],
-      ['listStudents', RequestMethod.GET, 'students'],
-      ['getStudent', RequestMethod.GET, 'students/:id'],
-      ['updateStudent', RequestMethod.PUT, 'students/:id'],
-      ['deleteStudent', RequestMethod.DELETE, 'students/:id'],
+      ['createTutor', RequestMethod.POST, 'createTutor'],
+      ['listTutors', RequestMethod.GET, 'listTutors'],
+      ['getTutor', RequestMethod.GET, 'getTutor/:id'],
+      ['updateTutor', RequestMethod.PUT, 'updateTutor/:id'],
+      ['deleteTutor', RequestMethod.DELETE, 'deleteTutor/:id'],
+      ['createStudent', RequestMethod.POST, 'createStudent'],
+      ['listStudents', RequestMethod.GET, 'listStudents'],
+      ['getStudent', RequestMethod.GET, 'getStudent/:id'],
+      ['updateStudent', RequestMethod.PUT, 'updateStudent/:id'],
+      ['deleteStudent', RequestMethod.DELETE, 'deleteStudent/:id'],
     ])('%s is %s %s', (name, method, path) => {
       const fn = AdminController.prototype[name] as unknown as object;
       expect(Reflect.getMetadata(METHOD_METADATA, fn)).toBe(method);

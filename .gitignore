@@ -62,3 +62,6 @@ docker.env
 
 # Prisma generated client
 /src/generated
+
+# Jev router skill dependencies
+.claude/skills/*/node_modules/

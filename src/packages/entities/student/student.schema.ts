@@ -11,7 +11,7 @@ export const studentPasswordSchema = z
   .regex(/[^A-Za-z0-9]/, { message: 'Password must contain a special character' });
 
 export const createStudentSchema = z.object({
-  email: z.string().trim().email('Invalid email').optional(),
+  email: z.string().trim().toLowerCase().email('Invalid email').optional(),
   // Tùy chọn: không gửi thì BE sinh mật khẩu ngẫu nhiên (không trả về).
   password: studentPasswordSchema.optional(),
   // Mật khẩu cho phụ huynh MỚI được tạo cùng học sinh (không áp dụng khi liên kết parentId có sẵn).
@@ -20,7 +20,8 @@ export const createStudentSchema = z.object({
     .string({ message: 'Student name must be required ...' })
     .min(1, { message: 'Student name must be 1 character ...' })
     .max(255, { message: 'Student name must not over 255 character ...' }),
-  userCode: z.string().min(1, 'Code is required').max(50, 'Code too long').optional(),
+  // `users.userCode` is VarChar(6): a longer value would fail inside Postgres (500).
+  userCode: z.string().min(1, 'Code is required').max(6, 'Code must be at most 6 characters').optional(),
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
   studentPhone: z.string().max(20).optional(),
   school: z.string().max(255).optional(),
@@ -32,7 +33,7 @@ export const createStudentSchema = z.object({
     .optional(),
   parentRelationship: z.enum(['FATHER', 'MOTHER', 'GUARDIAN']).optional(),
   parentPhone: z.string().max(20).optional(),
-  parentEmail: z.string().trim().email('Invalid parent email').optional(),
+  parentEmail: z.string().trim().toLowerCase().email('Invalid parent email').optional(),
   // Gia sư quản lý. Bắt buộc khi ADMIN tạo; TUTOR thì luôn là chính mình (service quyết định).
   tutorId: z.string().uuid({ message: 'Tutor id must be uuid' }).optional(),
 });
@@ -57,7 +58,7 @@ export const updateStudentSchema = z.object({
   parentLastName: z.string().trim().min(1).max(255).optional(),
   parentFirstName: z.string().trim().min(1).max(255).optional(),
   parentPhone: z.string().max(20).optional(),
-  parentEmail: z.string().trim().email('Invalid parent email').optional(),
+  parentEmail: z.string().trim().toLowerCase().email('Invalid parent email').optional(),
   parentRelationship: z.enum(['FATHER', 'MOTHER', 'GUARDIAN']).optional(),
   parentAddress: z.string().max(500).optional(),
   parentDistrict: z.string().max(30).optional(),
@@ -67,6 +68,13 @@ export const updateStudentSchema = z.object({
 
 export const setStudentPasswordSchema = z.object({
   password: studentPasswordSchema,
+});
+
+/** Parent picker search: PARENT accounts a staff member may attach to a student. */
+export const getParentsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  search: z.string().trim().min(1).optional(),
 });
 
 export const getStudentsQuerySchema = z.object({

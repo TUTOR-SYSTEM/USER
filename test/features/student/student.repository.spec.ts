@@ -297,4 +297,46 @@ describe('StudentRepository', () => {
       expect(db.user.findFirst).not.toHaveBeenCalled();
     });
   });
+
+  describe('getParents / findUserByEmail', () => {
+    const TUTOR_ID = '22222222-2222-4222-8222-222222222222';
+
+    it('lists PARENT accounts only, paginated, with the total', async () => {
+      const { repo, db } = await build();
+      db.user.count.mockResolvedValue(3);
+      db.user.findMany.mockResolvedValue([{ id: PARENT_ID }]);
+
+      const result = await repo.getParents({ page: 2, limit: 10, search: 'Tran Thi' });
+
+      expect(result).toEqual({ parents: [{ id: PARENT_ID }], total: 3 });
+      const args = db.user.findMany.mock.calls[0][0];
+      expect(args.where.AND[0]).toEqual({ role: 'PARENT' });
+      expect(args).toMatchObject({ take: 10, skip: 10 });
+      expect(args.select).not.toHaveProperty('password');
+    });
+
+    it('limits a tutor to parents they created or whose children they manage', async () => {
+      const { repo, db } = await build();
+      db.user.count.mockResolvedValue(0);
+      db.user.findMany.mockResolvedValue([]);
+
+      await repo.getParents({ page: 1, limit: 20, ownerTutorId: TUTOR_ID });
+
+      const { where } = db.user.findMany.mock.calls[0][0];
+      expect(where.AND).toContainEqual({
+        OR: [{ tutorId: TUTOR_ID }, { children: { some: { tutorId: TUTOR_ID } } }],
+      });
+    });
+
+    it('finds the account holding an email without selecting the password', async () => {
+      const { repo, db } = await build();
+      db.user.findFirst.mockResolvedValue({ id: PARENT_ID, role: 'PARENT', tutorId: null });
+      await repo.findUserByEmail({ email: 'mom@x.io' });
+      expect(db.user.findFirst).toHaveBeenCalledWith({
+        where: { email: 'mom@x.io' },
+        select: { id: true, role: true, tutorId: true },
+      });
+    });
+  });
+
 });

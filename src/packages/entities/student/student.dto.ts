@@ -1,9 +1,15 @@
 import { z } from 'zod';
-import { createStudentSchema, updateStudentSchema, getStudentsQuerySchema } from './student.schema';
+import {
+  createStudentSchema,
+  updateStudentSchema,
+  getStudentsQuerySchema,
+  getParentsQuerySchema,
+} from './student.schema';
 
 export type CreateStudentDto = z.infer<typeof createStudentSchema>;
 export type UpdateStudentDto = z.infer<typeof updateStudentSchema>;
 export type GetStudentsQueryDto = z.infer<typeof getStudentsQuerySchema>;
+export type GetParentsQueryDto = z.infer<typeof getParentsQuerySchema>;
 
 export type StudentParentResponseDto = {
   id: string;

@@ -1,9 +1,6 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Logger,
-} from '@nestjs/common';
+import { BadRequestException, ConflictException, Logger } from '@nestjs/common';
 import { compareData, hashData } from '@packages/helpers';
+import { JwtService } from '@nestjs/jwt';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { UserService } from 'src/features/user/user.service';
 import type { UserRepository } from 'src/features/user/user.repository';
@@ -60,7 +57,13 @@ describe('UserService', () => {
       send: jest.fn().mockResolvedValue({ deleted: 0 }),
       emit: jest.fn().mockResolvedValue(undefined),
     };
-    service = new UserService(repo as unknown as UserRepository, rmq as never);
+    const secrets: Record<string, string> = {
+      JWT_ACCESS_SECRET: 'access-test-secret',
+      JWT_REFRESH_SECRET: 'refresh-test-secret',
+    };
+    service = new UserService(repo as unknown as UserRepository, rmq as never, new JwtService({}), {
+      get: (key: string) => secrets[key],
+    } as never);
   });
 
   afterEach(() => {
@@ -498,20 +501,38 @@ describe('UserService', () => {
   });
 
   describe('changePasswordService', () => {
+    const SID = '2b8f1d2e-4c5a-4b7e-9a1d-0e2f3a4b5c6d';
+
     it('rejects when the account is missing', async () => {
       await expect(
-        service.changePasswordService(USER_ID, { currentPassword: 'a', newPassword: 'b' } as never),
+        service.changePasswordService(
+          USER_ID,
+          { currentPassword: 'a', newPassword: 'b' } as never,
+          SID,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a missing or malformed session id before touching the account', async () => {
+      await expect(
+        service.changePasswordService(
+          USER_ID,
+          { currentPassword: 'a', newPassword: 'b' } as never,
+          '',
+        ),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_SESSION });
+      expect(repo.findWithPassword).not.toHaveBeenCalled();
     });
 
     it('rejects a wrong current password and does not change anything', async () => {
       repo.findWithPassword.mockResolvedValue({ password: await hashData('real-old') });
 
       await expect(
-        service.changePasswordService(USER_ID, {
-          currentPassword: 'guess',
-          newPassword: 'New-1',
-        } as never),
+        service.changePasswordService(
+          USER_ID,
+          { currentPassword: 'guess', newPassword: 'New-1' } as never,
+          SID,
+        ),
       ).rejects.toMatchObject({
         constructor: BadRequestException,
         message: ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT,
@@ -525,15 +546,61 @@ describe('UserService', () => {
       repo.updatePassword.mockResolvedValue(row());
 
       await expect(
-        service.changePasswordService(USER_ID, {
-          currentPassword: 'real-old',
-          newPassword: 'New-1',
-        } as never),
-      ).resolves.toEqual({ message: 'Password changed successfully' });
+        service.changePasswordService(
+          USER_ID,
+          { currentPassword: 'real-old', newPassword: 'New-1' } as never,
+          SID,
+        ),
+      ).resolves.toEqual({
+        message: 'Password changed successfully',
+        refreshToken: expect.any(String),
+      });
 
       const [, stored] = repo.updatePassword.mock.calls[0] as [string, string];
       expect(stored).not.toBe('New-1');
       await expect(compareData('New-1', stored)).resolves.toBe(true);
+    });
+
+    it('leaves the password unchanged when revoking the old sessions fails', async () => {
+      repo.findWithPassword.mockResolvedValue({ password: await hashData('real-old') });
+      repo.findByField.mockResolvedValue([row()]);
+      rmq.send.mockRejectedValueOnce(new Error('redis down'));
+
+      await expect(
+        service.changePasswordService(
+          USER_ID,
+          { currentPassword: 'real-old', newPassword: 'New-1' } as never,
+          SID,
+        ),
+      ).rejects.toThrow('redis down');
+      expect(repo.updatePassword).not.toHaveBeenCalled();
+    });
+
+    it('keeps the current device: re-creates its session and returns its new refresh token', async () => {
+      repo.findWithPassword.mockResolvedValue({ password: await hashData('real-old') });
+      repo.findByField.mockResolvedValue([row()]);
+      repo.updatePassword.mockResolvedValue(row());
+
+      const { refreshToken } = (await service.changePasswordService(
+        USER_ID,
+        { currentPassword: 'real-old', newPassword: 'New-1' } as never,
+        SID,
+      )) as { refreshToken: string };
+
+      // Every session was revoked first, then only the caller's session is written back.
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', { prefix: `session:${USER_ID}:` });
+      expect(rmq.send).toHaveBeenCalledWith('redis.set', {
+        key: `session:${USER_ID}:${SID}`,
+        value: '1',
+        ttlSeconds: expect.any(Number),
+      });
+      expect(rmq.send).toHaveBeenCalledWith('redis.set', {
+        key: `refresh:${USER_ID}:${SID}`,
+        value: expect.any(String),
+        ttlSeconds: expect.any(Number),
+      });
+      const decoded = new JwtService({}).decode(refreshToken) as { sid: string; typ: string };
+      expect(decoded).toMatchObject({ sid: SID, typ: 'refresh' });
     });
   });
 });

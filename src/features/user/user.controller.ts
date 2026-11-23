@@ -244,6 +244,12 @@ export class UserController {
     @Body(new ZodValidationPipe(changePasswordSchema))
     changePasswordDto: ChangePasswordValues,
   ) {
-    return await this.userService.changePasswordService(user.id, changePasswordDto);
+    // The refresh token is for the gateway's cookie; it never goes out in this response body.
+    const { message } = await this.userService.changePasswordService(
+      user.id,
+      changePasswordDto,
+      user.sid,
+    );
+    return { message };
   }
 }

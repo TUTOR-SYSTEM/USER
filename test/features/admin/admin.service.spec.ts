@@ -365,7 +365,8 @@ describe('AdminService', () => {
       await expect(service.createStudent(createDto as never, ADMIN_ACTOR)).rejects.toMatchObject({
         message: `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: Bao Tran`,
       });
-      expect(repo.findByUsername).toHaveBeenCalledTimes(10);
+      // 10 sequential candidates, then 5 random-suffixed ones.
+      expect(repo.findByUsername).toHaveBeenCalledTimes(15);
       expect(repo.create).not.toHaveBeenCalled();
     });
 

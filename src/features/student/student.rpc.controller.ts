@@ -2,10 +2,12 @@ import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import {
   createStudentSchema,
+  getParentsQuerySchema,
   getStudentsQuerySchema,
   setStudentPasswordSchema,
   updateStudentSchema,
   type CreateStudentDto,
+  type GetParentsQueryDto,
   type GetStudentsQueryDto,
   type UpdateStudentDto,
 } from '@packages/entities/student';
@@ -40,6 +42,16 @@ export class StudentRpcController {
     const { actor, rest } = splitRpcActor(payload);
     return this.studentService.findAll(
       parseRpcPayload<GetStudentsQueryDto>(getStudentsQuerySchema, rest),
+      actor,
+    );
+  }
+
+  /** Parent picker: PARENT accounts the caller may attach to a student (TUTOR: their own). */
+  @MessagePattern('student.findParents')
+  async findParents(@Payload() payload: GetParentsQueryDto & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    return this.studentService.findParents(
+      parseRpcPayload<GetParentsQueryDto>(getParentsQuerySchema, rest),
       actor,
     );
   }

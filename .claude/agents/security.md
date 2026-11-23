@@ -41,8 +41,21 @@ services, repositories, guards, and schema changes.
   guessing a UUID. Verify new routes aren't accidentally `@Public()` and admin actions use
   `@Roles('ADMIN')` (from `@packages/decorators`) + `RolesGuard` — there is no `@Admin()`
   decorator.
+- **RPC caller identity**: an `@MessagePattern` handler must take the caller only from
+  `splitRpcActor(payload)` (gateway-signed `actorId`/`actorRole`/`actorSid`, verified with
+  `RPC_ACTOR_SECRET`), never from a payload `userId`/`id` on its own. Self-acting patterns must
+  compare actor and target. Flag any new handler that reads identity from the raw payload.
+- **RPC replay**: gateway-signed RPC envelopes are single-use (`RpcActorReplayInterceptor`, Redis
+  `incr` per `actorSig`). Flag any new `@MessagePattern` path that skips the interceptor (for example
+  a second microservice that does not register it) or any signature not bound to `actorSigTs`.
+- **Revocation order**: every new revoke path must write its `revoked-all:`/`revoked-session:` marker
+  before deleting keys, or an in-flight refresh can revive a session.
+- **Password and session**: every password write revokes sessions (`revokeAllUserSessions`), except
+  `changePasswordService`, which keeps only the caller's `sid`. Refresh and one-time Redis tokens
+  are consumed with `redis.getdel`, not get-then-del. Flag refresh-token or session writes that can
+  run after a revoke.
 - **AuthN**: JWT verification not bypassed; access vs. refresh secrets not confused; token
-  TTLs sane; no tokens/passwords logged.
+  TTLs sane; no tokens/passwords logged; refresh tokens only in the httpOnly cookie, never a body.
 - **Injection**: Prisma used parameterized (no `$queryRawUnsafe`/`$executeRawUnsafe`) (no raw string SQL concatenation); dynamic column
   access (`fieldMaps`) is whitelisted, never taking arbitrary user keys.
 - **Input validation**: every `@Body`/`@Query` guarded by `ZodValidationPipe`; UUIDs validated

@@ -49,7 +49,8 @@ describe('AuthRpcController', () => {
     const result = await handler.call(controller, payload);
 
     expect(Reflect.getMetadata(PATTERN_METADATA, handler)).toEqual([pattern]);
-    expect(service[svc]).toHaveBeenCalledWith(payload);
+    // Login patterns also forward `clientIp` (lockout key), so compare the first argument only.
+    expect(service[svc].mock.calls[0][0]).toEqual(payload);
     expect(result).toBe(sentinel);
   });
 
