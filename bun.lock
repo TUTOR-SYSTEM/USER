@@ -37,6 +37,7 @@
         "@nestjs/cli": "^11.0.0",
         "@nestjs/schematics": "^11.0.0",
         "@nestjs/testing": "^11.0.1",
+        "@prisma/prisma7": "7",
         "@swc/core": "^1.15.40",
         "@swc/jest": "^0.2.39",
         "@types/express": "^5.0.0",
@@ -328,6 +329,8 @@
     "@prisma/fetch-engine": ["@prisma/fetch-engine@7.10.1", "", { "dependencies": { "@prisma/debug": "7.10.1", "@prisma/engines-version": "8.1.0-1.d1b3f377ca835d73fd50954a5e22128b9ebdd6b8", "@prisma/get-platform": "7.10.1" } }, "sha512-qZezeaExLWG2ptbHOrMxdiWluKHgqEclTdJbvY6pk6+Wg7EiVkeq5U3cXz9ti8nd0bngNvsDgledLHVRg5LF1w=="],
 
     "@prisma/get-platform": ["@prisma/get-platform@7.2.0", "", { "dependencies": { "@prisma/debug": "7.2.0" } }, "sha512-k1V0l0Td1732EHpAfi2eySTezyllok9dXb6UQanajkJQzPUGi3vO2z7jdkz67SypFTdmbnyGYxvEvYZdZsMAVA=="],
+
+    "@prisma/prisma7": ["@prisma/prisma7@7.10.1", "", { "dependencies": { "prisma": "7.10.1" }, "bin": { "prisma7": "build/prisma7.js" } }, "sha512-n2jvLXnM1ULLpObVG7kGH2MqNxDt46+wIjHle6nOQqnFzZ76ZZi5j1QGec6ZvHC34kKZpY3Nb4JyGg/FlCUJrQ=="],
 
     "@prisma/query-plan-executor": ["@prisma/query-plan-executor@7.2.0", "", {}, "sha512-EOZmNzcV8uJ0mae3DhTsiHgoNCuu1J9mULQpGCh62zN3PxPTd+qI9tJvk5jOst8WHKQNwJWR3b39t0XvfBB0WQ=="],
 

@@ -55,7 +55,7 @@ model User {
   gradesId      String[]  @default([]) @map("grades_id") @db.Uuid
   parentId      String?   @map("parent_id") @db.Uuid
   tutorId       String?   @map("tutor_id") @db.Uuid
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+ createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamp()
   updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
 
   parent   User?  @relation("UserParent", fields: [parentId], references: [id], onDelete: Cascade)
