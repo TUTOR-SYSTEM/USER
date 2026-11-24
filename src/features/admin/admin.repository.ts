@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/database.module';
 import type { Prisma } from '../../generated/prisma/client';
-import type { JwtUserRole } from '@packages/helpers';
+import { MAX_SEARCH_TOKENS, type JwtUserRole } from '@packages/helpers';
 
 /** A managed account handled by the admin module. */
 export type ManagedRole = Extract<JwtUserRole, 'TUTOR' | 'STUDENT'>;
@@ -43,7 +43,13 @@ export class AdminRepository {
    * Quy tắc: gia sư quản lý học sinh = gia sư của lớp học sinh đang tham gia.
    * true nếu học sinh đang thuộc một lớp có gia sư khác `tutorId` (null = chưa có gia sư).
    */
-  async hasEnrollmentWithOtherTutor({ studentId, tutorId }: { studentId: string; tutorId: string | null }) {
+  async hasEnrollmentWithOtherTutor({
+    studentId,
+    tutorId,
+  }: {
+    studentId: string;
+    tutorId: string | null;
+  }) {
     const rows = await this.db.$queryRaw<{ n: bigint }[]>`
       SELECT COUNT(*)::bigint AS n
       FROM class_students cs
@@ -168,6 +174,7 @@ export class AdminRepository {
       where.AND = search
         .trim()
         .split(/\s+/)
+        .slice(0, MAX_SEARCH_TOKENS)
         .map((word) => {
           const contains = { contains: word, mode: 'insensitive' } as const;
           return {

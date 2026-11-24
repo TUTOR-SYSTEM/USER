@@ -1,7 +1,14 @@
 import { Controller, ForbiddenException } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { ERROR_MESSAGES } from 'src/data/constants';
-import { RpcActorPayload, splitClientIp, splitRpcActor } from '@packages/helpers';
+import {
+  type OAuthProfilePayload,
+  parseRpcPayload,
+  RpcActorPayload,
+  splitClientIp,
+  splitOAuthProfile,
+  splitRpcActor,
+} from '@packages/helpers';
 
 /** Gateway-forwarded client IP and its signature (login only). */
 type ClientIpPayload = {
@@ -9,7 +16,17 @@ type ClientIpPayload = {
   clientIpSig?: string;
   clientIpSigTs?: number;
 };
-import { verifyEmailSchema } from '@packages/entities/auth';
+import {
+  facebookProfileSchema,
+  forgotPasswordSchema,
+  googleProfileSchema,
+  loginByUserCodeSchema,
+  loginSchema,
+  refreshTokenBodySchema,
+  registerSchema,
+  resetPasswordSchema,
+  verifyEmailSchema,
+} from '@packages/entities/auth';
 import type {
   ForgotPasswordDto,
   ForgotPasswordResponseDto,
@@ -39,7 +56,10 @@ export class AuthRpcController {
 
   @MessagePattern('auth.register')
   register(@Payload() registerDto: RegisterDto): Promise<RegisterResponseDto> {
-    return this.authService.registerService(registerDto);
+    // Same schema as the HTTP route: a direct publisher on the queue gets no weaker validation.
+    return this.authService.registerService(
+      parseRpcPayload<RegisterDto>(registerSchema, registerDto),
+    );
   }
 
   /**
@@ -49,7 +69,7 @@ export class AuthRpcController {
   @MessagePattern('auth.login')
   login(@Payload() payload: LoginDto & ClientIpPayload): Promise<LoginResponseDto> {
     const { clientIp, rest } = splitClientIp(payload);
-    return this.authService.loginService(rest, clientIp);
+    return this.authService.loginService(parseRpcPayload<LoginDto>(loginSchema, rest), clientIp);
   }
 
   @MessagePattern('auth.loginByUserCode')
@@ -57,12 +77,17 @@ export class AuthRpcController {
     @Payload() payload: LoginByUserCodeDto & ClientIpPayload,
   ): Promise<LoginResponseDto> {
     const { clientIp, rest } = splitClientIp(payload);
-    return this.authService.loginByUserCodeService(rest, clientIp);
+    return this.authService.loginByUserCodeService(
+      parseRpcPayload<LoginByUserCodeDto>(loginByUserCodeSchema, rest),
+      clientIp,
+    );
   }
 
   @MessagePattern('auth.refresh')
   refresh(@Payload() body: RefreshTokenBodyDto): Promise<LoginResponseDto> {
-    return this.authService.refreshTokens(body);
+    return this.authService.refreshTokens(
+      parseRpcPayload<RefreshTokenBodyDto>(refreshTokenBodySchema, body),
+    );
   }
 
   /** Ends one login session (the device identified by `sid`). Called by the gateway's `POST /auth/logout`. */
@@ -80,12 +105,16 @@ export class AuthRpcController {
 
   @MessagePattern('auth.forgotPassword')
   forgotPassword(@Payload() dto: ForgotPasswordDto): Promise<ForgotPasswordResponseDto> {
-    return this.authService.forgotPasswordService(dto);
+    return this.authService.forgotPasswordService(
+      parseRpcPayload<ForgotPasswordDto>(forgotPasswordSchema, dto),
+    );
   }
 
   @MessagePattern('auth.resetPassword')
   resetPassword(@Payload() dto: ResetPasswordDto): Promise<ResetPasswordResponseDto> {
-    return this.authService.resetPasswordService(dto);
+    return this.authService.resetPasswordService(
+      parseRpcPayload<ResetPasswordDto>(resetPasswordSchema, dto),
+    );
   }
 
   @MessagePattern('auth.verifyEmail')
@@ -96,12 +125,21 @@ export class AuthRpcController {
   }
 
   @MessagePattern('auth.googleLogin')
-  googleLogin(@Payload() profile: GoogleProfile): Promise<LoginResponseDto> {
-    return this.authService.googleLoginService(profile);
+  googleLogin(@Payload() payload: GoogleProfile & OAuthProfilePayload): Promise<LoginResponseDto> {
+    // Only a profile the gateway signed (after the provider's callback) may be turned into a login.
+    const profile = splitOAuthProfile(payload, 'google');
+    return this.authService.googleLoginService(
+      parseRpcPayload<GoogleProfile>(googleProfileSchema, profile),
+    );
   }
 
   @MessagePattern('auth.facebookLogin')
-  facebookLogin(@Payload() profile: FacebookProfile): Promise<LoginResponseDto> {
-    return this.authService.facebookLoginService(profile);
+  facebookLogin(
+    @Payload() payload: FacebookProfile & OAuthProfilePayload,
+  ): Promise<LoginResponseDto> {
+    const profile = splitOAuthProfile(payload, 'facebook');
+    return this.authService.facebookLoginService(
+      parseRpcPayload<FacebookProfile>(facebookProfileSchema, profile),
+    );
   }
 }

@@ -52,6 +52,27 @@
   signs centrally in `RmqProducer.send`/`emit` (`withActorSignature`), so call sites only set
   `actorId`/`actorRole`(/`actorSid`). Keep `rpc-actor-signature.helper.ts` identical in both repos.
   Tests that send actors must sign them (see `test/features/user/user.rpc.controller.spec.ts`).
+- **OAuth profiles are signed by the gateway**: `auth.googleLogin`/`auth.facebookLogin` accept a profile
+  only when `oauthProfileSig` (HMAC with `RPC_ACTOR_SECRET`, bound to provider + provider id + email +
+  timestamp) verifies (`splitOAuthProfile`); otherwise 403. The signature is single-use
+  (`RpcActorReplayInterceptor`). Gateway signs centrally in `withActorSignature`; keep
+  `rpc-actor-signature.helper.ts` identical in both repos. Every `auth.*` RPC payload is validated with the
+  same Zod schema as its HTTP route (`parseRpcPayload`), never trusted as-is.
+- **Password-reset code is brute-force bounded across codes**: besides the 5 guesses per code, an account gets
+  10 guesses per hour in total (`reset-password-otp-window:{userId}`, not reset by requesting a new code), and
+  `forgotPassword` sends at most 3 codes per address per hour (counted for unknown addresses too). Both
+  fail closed when Redis is unavailable.
+- **Browser OAuth redirect never carries the refresh token**: access token in the URL fragment, refresh token
+  in the httpOnly `refresh_token` cookie (`setRefreshCookie`), same as gateway.
+- **"Current password" checks are throttled and gate email changes**: `UserService.assertCurrentPassword` counts
+  wrong answers per account (5 per 15 min, `current-password-attempts:{userId}`, fails closed on Redis errors)
+  and is used by `changePasswordService` and by self-update when the caller changes their OWN email (payload
+  field `currentPassword`, never written to the row). Admin changing someone else's email is not asked, but
+  `AdminService.updateManagedUser` still resets `emailVerified` and revokes sessions on an email change.
+- **bcrypt cost** is 12 (`BCRYPT_ROUNDS`, clamped 10..15); `compareData` returns false on an unreadable hash
+  (counts as a failed sign-in) and `hashData` never echoes its cause. Logs redact passwords, signatures and
+  contact details (phone/address/dob) in both interceptors. Swagger `/api-docs` is off when
+  `NODE_ENV=production` unless `SWAGGER_ENABLED=true`. List `search` is capped at 100 chars / 5 words.
 - **Login lockout is per (client IP, account)**: `auth.login`/`auth.loginByUserCode` take `clientIp`
   from the gateway (`@Ip()`). The gateway signs it (`clientIpSig`, `splitClientIp`). An unsigned or
   forged IP is ignored and the shared bucket applies. The counter is keyed by IP and account, so one

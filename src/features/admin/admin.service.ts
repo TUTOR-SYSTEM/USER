@@ -72,7 +72,9 @@ export class AdminService {
     this.assertAdmin(actor);
     this.assertUuid(id);
     await this.getManagedUser(id, 'TUTOR');
-    await this.adminRepository.updateByIdAndRole(id, 'TUTOR', { password: await hashData(password) });
+    await this.adminRepository.updateByIdAndRole(id, 'TUTOR', {
+      password: await hashData(password),
+    });
     await revokeAllUserSessions(this.rmqProducer, id);
     return { id, passwordUpdated: true };
   }
@@ -249,8 +251,10 @@ export class AdminService {
     dto: UpdateManagedUserDto | UpdateManagedStudentDto,
   ) {
     this.assertUuid(id);
-    await this.getManagedUser(id, role);
+    const existingRow = await this.getManagedUser(id, role);
 
+    // A new address has not been proven yet, and the old sessions belonged to the old owner of it.
+    let emailChanged = false;
     if (dto.email) {
       const email = dto.email.trim().toLowerCase();
       const [existing] = await this.adminRepository.findByEmail(email);
@@ -258,6 +262,7 @@ export class AdminService {
         throw this.fieldConflict('email', ERROR_MESSAGES.EMAIL_EXISTS);
       }
       dto = { ...dto, email };
+      emailChanged = email !== existingRow.email;
     }
     if (dto.username) {
       const [existing] = await this.adminRepository.findByUsername(dto.username.trim());
@@ -269,6 +274,7 @@ export class AdminService {
     const { subjects, ...rest } = dto;
     const writeData = {
       ...rest,
+      ...(emailChanged ? { emailVerified: false } : {}),
       // `subjects` arrives as string[] but the column stores a comma-joined string;
       // an empty array or null clears it.
       ...(subjects !== undefined
@@ -283,7 +289,7 @@ export class AdminService {
       );
     }
     // A deactivated account must not keep any of its sessions alive.
-    if (dto.isActive === false) await revokeAllUserSessions(this.rmqProducer, id);
+    if (dto.isActive === false || emailChanged) await revokeAllUserSessions(this.rmqProducer, id);
     return this.mapRow(updated);
   }
 

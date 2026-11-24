@@ -101,7 +101,13 @@ export class StudentRepository {
    * Quy tắc: gia sư quản lý học sinh = gia sư của lớp học sinh đang tham gia.
    * true nếu học sinh đang thuộc một lớp có gia sư khác `tutorId` (null = chưa có gia sư).
    */
-  async hasEnrollmentWithOtherTutor({ studentId, tutorId }: { studentId: string; tutorId: string | null }) {
+  async hasEnrollmentWithOtherTutor({
+    studentId,
+    tutorId,
+  }: {
+    studentId: string;
+    tutorId: string | null;
+  }) {
     const rows = await this.db.$queryRaw<{ n: bigint }[]>`
       SELECT COUNT(*)::bigint AS n
       FROM class_students cs
@@ -181,9 +187,29 @@ export class StudentRepository {
     return this.db.user.findFirst({ where: { id, role: 'PARENT' } });
   }
 
+  /**
+   * PARENT the caller may attach to a student. `ownerTutorId` (TUTOR) limits it to parents the tutor
+   * created or whose children the tutor manages — the same rule as the picker (`getParents`).
+   * Omit it (ADMIN) for any PARENT.
+   */
+  async findParentForActor({ id, ownerTutorId }: { id: string; ownerTutorId?: string }) {
+    return this.db.user.findFirst({
+      where: {
+        id,
+        role: 'PARENT',
+        ...(ownerTutorId
+          ? { OR: [{ tutorId: ownerTutorId }, { children: { some: { tutorId: ownerTutorId } } }] }
+          : {}),
+      },
+    });
+  }
+
   /** Any account holding `email` — used to reuse a PARENT instead of failing on the UNIQUE index. */
   async findUserByEmail({ email }: { email: string }) {
-    return this.db.user.findFirst({ where: { email }, select: { id: true, role: true, tutorId: true } });
+    return this.db.user.findFirst({
+      where: { email },
+      select: { id: true, role: true, tutorId: true },
+    });
   }
 
   /**

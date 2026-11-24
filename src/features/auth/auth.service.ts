@@ -55,6 +55,17 @@ const RESET_PASSWORD_OTP_MAX_ATTEMPTS = 5;
 const resetPasswordOtpRedisKey = (userId: string) => `reset-password-otp:${userId}`;
 const resetPasswordOtpAttemptsRedisKey = (userId: string, codeId: string) =>
   `reset-password-otp-attempts:${userId}:${codeId}`;
+/**
+ * Guesses allowed per account per hour across ALL codes. The per-code limit alone can be reset by
+ * requesting a new code, so this one is what actually bounds brute force of the 6-digit code.
+ */
+const RESET_PASSWORD_OTP_MAX_ATTEMPTS_PER_WINDOW = 10;
+const RESET_PASSWORD_WINDOW_SECONDS = 3600;
+const resetPasswordOtpWindowRedisKey = (userId: string) => `reset-password-otp-window:${userId}`;
+/** Reset codes sent per address per hour. Counted for unknown addresses too, so it reveals nothing. */
+const FORGOT_PASSWORD_MAX_REQUESTS_PER_WINDOW = 3;
+const forgotPasswordRateRedisKey = (email: string) =>
+  `forgot-password-rate:${createHash('sha256').update(email).digest('hex')}`;
 
 /** How long an email-verification link stays valid. */
 const VERIFY_EMAIL_TOKEN_TTL_SECONDS = 86400;
@@ -548,19 +559,43 @@ export class AuthService {
   async forgotPasswordService(
     forgotPasswordDto: ForgotPasswordDto,
   ): Promise<ForgotPasswordResponseDto> {
-    const [user] = await this.userService.getUserByField({
-      field: 'email',
-      value: normalizeEmail(forgotPasswordDto.email),
-    });
+    const email = normalizeEmail(forgotPasswordDto.email);
+    const [user] = await this.userService.getUserByField({ field: 'email', value: email });
+    // Counted for every address (known or not) so the quota itself reveals nothing, and over-quota
+    // requests get the same answer as accepted ones.
+    const withinQuota = await this.takeForgotPasswordSlot(email);
     // Same response, same timing, whether or not the email exists: the mail is sent in the
     // background so a registered address does not answer more slowly than an unknown one.
-    if (user) {
+    if (user && withinQuota) {
       this.sendPasswordResetOtp(user).catch((error: unknown) =>
         this.logger.warn(`Failed to send reset code to user ${user.id}`, error),
       );
     }
 
     return { ok: true };
+  }
+
+  /** Counts one reset-code request for this address. Fails closed: no count, no mail. */
+  private async takeForgotPasswordSlot(email: string): Promise<boolean> {
+    try {
+      const { count } = await this.rmqProducer.send<
+        { count: number },
+        { key: string; windowSeconds: number }
+      >(
+        'redis.incr',
+        { key: forgotPasswordRateRedisKey(email), windowSeconds: RESET_PASSWORD_WINDOW_SECONDS },
+        REDIS_READ_TIMEOUT_MS,
+        0,
+      );
+      if (count > FORGOT_PASSWORD_MAX_REQUESTS_PER_WINDOW) {
+        this.logger.warn('Password reset requests over quota for one address');
+        return false;
+      }
+      return true;
+    } catch (error) {
+      this.logger.warn('Reset request counter unavailable', error);
+      return false;
+    }
   }
 
   /**
@@ -609,6 +644,17 @@ export class AuthService {
       throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
     }
 
+    // Account-wide cap first: requesting a fresh code resets the per-code counter below, but not this.
+    const windowAttempts = await this.countResetAttempt(
+      resetPasswordOtpWindowRedisKey(user.id),
+      RESET_PASSWORD_WINDOW_SECONDS,
+    );
+    if (windowAttempts > RESET_PASSWORD_OTP_MAX_ATTEMPTS_PER_WINDOW) {
+      throw new HttpException(
+        ERROR_MESSAGES.RESET_OTP_TOO_MANY_ATTEMPTS,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     // Count every guess against this code before comparing, so brute force stops after the limit.
     const attempts = await this.recordResetOtpAttempt(user.id, record.codeId);
     if (attempts > RESET_PASSWORD_OTP_MAX_ATTEMPTS) {
@@ -633,6 +679,10 @@ export class AuthService {
     const userId = user.id;
     // Entering the code from the reset email proves the user controls the mailbox.
     await this.userService.setEmailVerifiedService({ id: userId, emailVerified: true });
+    // Best effort: a missed delete only leaves the counter to expire on its own.
+    this.rmqProducer
+      .emit('redis.del', { keys: [resetPasswordOtpWindowRedisKey(userId)] })
+      .catch((error: unknown) => this.logger.warn('Failed to clear reset attempts', error));
 
     return { ok: true };
   }
@@ -700,20 +750,19 @@ export class AuthService {
    * if the counter cannot be updated the guess is refused, since a guess that is not counted could
    * be brute-forced.
    */
-  private async recordResetOtpAttempt(userId: string, codeId: string): Promise<number> {
+  private recordResetOtpAttempt(userId: string, codeId: string): Promise<number> {
+    return this.countResetAttempt(
+      resetPasswordOtpAttemptsRedisKey(userId, codeId),
+      RESET_PASSWORD_OTP_TTL_SECONDS,
+    );
+  }
+
+  private async countResetAttempt(key: string, windowSeconds: number): Promise<number> {
     try {
       const { count } = await this.rmqProducer.send<
         { count: number },
         { key: string; windowSeconds: number }
-      >(
-        'redis.incr',
-        {
-          key: resetPasswordOtpAttemptsRedisKey(userId, codeId),
-          windowSeconds: RESET_PASSWORD_OTP_TTL_SECONDS,
-        },
-        REDIS_READ_TIMEOUT_MS,
-        0,
-      );
+      >('redis.incr', { key, windowSeconds }, REDIS_READ_TIMEOUT_MS, 0);
       return count;
     } catch (error) {
       this.logger.warn('Reset code attempt counter unavailable', error);

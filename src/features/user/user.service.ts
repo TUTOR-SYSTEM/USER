@@ -2,9 +2,12 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { UserRepository } from './user.repository';
@@ -68,6 +71,11 @@ const SELF_UPDATE_RESTRICTED_FIELDS = [
   'facebookId',
 ] as const satisfies readonly (keyof UpdateUserDto)[];
 
+/** Wrong "current password" answers allowed per account per window (change password / change email). */
+const CURRENT_PASSWORD_MAX_ATTEMPTS = 5;
+const CURRENT_PASSWORD_WINDOW_SECONDS = 900;
+const currentPasswordAttemptsRedisKey = (userId: string) => `current-password-attempts:${userId}`;
+
 /** Postgres `unique_violation`. */
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -89,6 +97,7 @@ function sanitizeUpdate(data: UpdateUserDto): UpdateUserDto {
   const safe: Partial<Record<string, unknown>> = { ...data };
   delete safe.id;
   delete safe.password;
+  delete safe.currentPassword;
   // Set only by the auth flows (verify-email, OAuth, reset-password) — never from a caller's body.
   delete safe.emailVerified;
   if (typeof safe.dateOfBirth === 'string') safe.dateOfBirth = new Date(safe.dateOfBirth);
@@ -375,8 +384,10 @@ export class UserService {
     }
 
     const hashedPassword = await hashData(password);
-    const updated = await this.userRepo.updatePassword(id, hashedPassword);
+    // Revoke first (same order as changePasswordService): if Redis fails the password stays as it was,
+    // never changed while old sessions are still alive.
     await this.revokeAllSessions(id);
+    const updated = await this.userRepo.updatePassword(id, hashedPassword);
     return updated && omitPassword(updated);
   }
 
@@ -427,6 +438,16 @@ export class UserService {
     // Email: ADMIN/TUTOR/PARENT may change their own; a STUDENT may not (only an admin can).
     if (actor.id === id && actor.role === 'STUDENT' && data.email !== undefined) {
       throw new BadRequestException(ERROR_MESSAGES.STUDENT_CANNOT_UPDATE_EMAIL);
+    }
+
+    // Changing your own email changes who can reset your password, so it needs the current password
+    // (a stolen access token alone is not enough). An admin editing someone else is not asked.
+    if (actor.id === id && data.email !== undefined) {
+      const current = await this.userRepo.findById(id);
+      if (current && normalizeEmail(data.email) !== current.email) {
+        const account = await this.userRepo.findWithPassword(id);
+        if (account) await this.assertCurrentPassword(id, data.currentPassword, account.password);
+      }
     }
 
     return this.applyUserUpdate({ id, data });
@@ -515,12 +536,7 @@ export class UserService {
       throw new BadRequestException(ERROR_MESSAGES.USER_NOT_FOUND);
     }
 
-    const isMatch = await compareData(dto.currentPassword, user.password);
-    if (!isMatch) {
-      // 400 (not 401): the session is valid, only the submitted current password is wrong — a 401
-      // would make clients treat the access token as expired and sign the user out.
-      throw new BadRequestException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);
-    }
+    await this.assertCurrentPassword(userId, dto.currentPassword, user.password);
 
     const [fresh] = await this.getUserByField({ field: 'id', value: userId });
     if (!fresh) {
@@ -557,6 +573,48 @@ export class UserService {
   }
 
   // ─── helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Checks the password the caller typed as "current password". Wrong answers are counted per
+   * account (a stolen access token must not be able to guess the password here), and the counter is
+   * cleared by a right answer. 400 (not 401): the session is valid, only the submitted current
+   * password is wrong — a 401 would make clients treat the access token as expired.
+   */
+  private async assertCurrentPassword(
+    userId: string,
+    password: string | undefined,
+    hash: string,
+  ): Promise<void> {
+    let attempts: number;
+    try {
+      const reply = await this.rmqProducer.send<
+        { count: number } | undefined,
+        { key: string; windowSeconds: number }
+      >(
+        'redis.incr',
+        {
+          key: currentPasswordAttemptsRedisKey(userId),
+          windowSeconds: CURRENT_PASSWORD_WINDOW_SECONDS,
+        },
+        2_000,
+        0,
+      );
+      attempts = reply?.count ?? 0;
+    } catch (error) {
+      this.logger.warn('Current-password attempt counter unavailable', error);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
+    }
+    if (attempts > CURRENT_PASSWORD_MAX_ATTEMPTS) {
+      throw new HttpException(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+    }
+    if (!password || !(await compareData(password, hash))) {
+      throw new BadRequestException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);
+    }
+    // Best effort: a missed delete only leaves the counter to expire on its own.
+    void Promise.resolve(
+      this.rmqProducer.emit('redis.del', { keys: [currentPasswordAttemptsRedisKey(userId)] }),
+    ).catch((error: unknown) => this.logger.warn('Failed to clear password attempts', error));
+  }
 
   private assertAdmin(actor: UserActor): void {
     if (actor.role !== 'ADMIN') throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);

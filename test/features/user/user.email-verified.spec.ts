@@ -4,6 +4,7 @@ import { UserService, type UserActor } from 'src/features/user/user.service';
 import type { UserRepository } from 'src/features/user/user.repository';
 import type { RmqProducer } from 'src/features/rabbitmq/rmq.producer';
 import { updateUserSchema } from '@packages/entities/user/user.schema';
+import { hashData } from '@packages/helpers';
 
 // user.repository imports `@packages/database/schema`; the service only needs the class token.
 jest.mock('src/features/user/user.repository', () => ({ UserRepository: class UserRepository {} }));
@@ -42,6 +43,7 @@ describe('UserService email verification', () => {
       findUserCode: jest.fn().mockResolvedValue(undefined),
       create: jest.fn(async (data: Record<string, unknown>) => data),
       update: jest.fn(async (_id: string, data: Record<string, unknown>) => row(data)),
+      findWithPassword: jest.fn(),
     };
     rmq = { emit: jest.fn().mockResolvedValue(undefined), send: jest.fn() };
     service = new UserService(repo as unknown as UserRepository, rmq as unknown as RmqProducer);
@@ -105,11 +107,75 @@ describe('UserService email verification', () => {
   });
 
   describe('self-update (PUT /users) email change', () => {
-    it('lets a TUTOR change their own email and resets verification', async () => {
+    const withPassword = async () =>
+      repo.findWithPassword.mockResolvedValue({
+        id: USER_ID,
+        password: await hashData('Right-1!'),
+      });
+
+    it('refuses an email change without the current password and writes nothing', async () => {
+      await withPassword();
+      await expect(
+        service.updateOwnProfileService({
+          id: USER_ID,
+          actor: TUTOR,
+          data: { email: 'new@example.test' } as never,
+        }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses an email change with a wrong current password', async () => {
+      await withPassword();
+      await expect(
+        service.updateOwnProfileService({
+          id: USER_ID,
+          actor: TUTOR,
+          data: { email: 'new@example.test', currentPassword: 'Wrong-1!' } as never,
+        }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses with 429 after too many wrong current-password answers', async () => {
+      await withPassword();
+      rmq.send.mockResolvedValueOnce({ count: 6 });
+      await expect(
+        service.updateOwnProfileService({
+          id: USER_ID,
+          actor: TUTOR,
+          data: { email: 'new@example.test', currentPassword: 'Right-1!' } as never,
+        }),
+      ).rejects.toMatchObject({ status: 429 });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('does not ask for the password when the email is not actually changing', async () => {
       await service.updateOwnProfileService({
         id: USER_ID,
         actor: TUTOR,
-        data: { email: 'new@example.test' } as never,
+        data: { email: 'OLD@example.test', phone: '0900' } as never,
+      });
+      expect(repo.findWithPassword).not.toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalled();
+    });
+
+    it('never writes currentPassword into the row', async () => {
+      await withPassword();
+      await service.updateOwnProfileService({
+        id: USER_ID,
+        actor: TUTOR,
+        data: { email: 'new@example.test', currentPassword: 'Right-1!' } as never,
+      });
+      expect(repo.update.mock.calls[0][1]).not.toHaveProperty('currentPassword');
+    });
+
+    it('lets a TUTOR change their own email and resets verification', async () => {
+      await withPassword();
+      await service.updateOwnProfileService({
+        id: USER_ID,
+        actor: TUTOR,
+        data: { email: 'new@example.test', currentPassword: 'Right-1!' } as never,
       });
 
       expect(repo.update).toHaveBeenCalledWith(

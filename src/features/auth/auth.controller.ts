@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Ip, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   FacebookOAuthCallbackGuard,
@@ -35,6 +35,7 @@ import {
 } from '@packages/entities/auth';
 import { ApiResponse, Public } from '@packages/decorators';
 import { ZodValidationPipe } from '@packages/pipes';
+import { setRefreshCookie } from '@packages/helpers/refresh-cookie.helper';
 import type { FacebookProfile, GoogleProfile } from '@packages/strategy';
 import { AuthService } from './auth.service';
 
@@ -123,8 +124,10 @@ export class AuthController {
   async login(
     @Body(new ZodValidationPipe<LoginDto>(loginSchema))
     loginDto: LoginDto,
+    // Keys the lockout counter per client IP; without it everyone shares one "unknown" bucket.
+    @Ip() clientIp: string,
   ): Promise<LoginResponseDto> {
-    return this.authService.loginService(loginDto);
+    return this.authService.loginService(loginDto, clientIp);
   }
 
   // TODO : login with usercode ...
@@ -171,8 +174,9 @@ export class AuthController {
   async loginByUserCode(
     @Body(new ZodValidationPipe<LoginByUserCodeDto>(loginByUserCodeSchema))
     dto: LoginByUserCodeDto,
+    @Ip() clientIp: string,
   ): Promise<LoginResponseDto> {
-    return this.authService.loginByUserCodeService(dto);
+    return this.authService.loginByUserCodeService(dto, clientIp);
   }
 
   // TODO : refresh token ...
@@ -286,7 +290,8 @@ export class AuthController {
   })
   @SwaggerResponse({
     status: 302,
-    description: 'Redirects to frontend with tokens in query params',
+    description:
+      'Redirects to the frontend with the access token in the URL fragment (#accessToken=...). The refresh token is set as an httpOnly cookie.',
   })
   async googleAuthCallback(
     @Req() req: RequestWithGoogleProfile,
@@ -297,9 +302,11 @@ export class AuthController {
     const redirectBase =
       this.configService.get<string>('GOOGLE_OAUTH_REDIRECT_URL') ??
       'http://localhost:3000/oauth/callback';
+    // The refresh token never travels in the URL: it is set as an httpOnly cookie on this response.
+    // The access token goes in the fragment, which browsers do not send to servers or in Referer.
+    setRefreshCookie(res, refreshToken, this.configService);
     const redirectUrl = new URL(redirectBase);
-    redirectUrl.searchParams.set('accessToken', accessToken);
-    redirectUrl.searchParams.set('refreshToken', refreshToken);
+    redirectUrl.hash = new URLSearchParams({ accessToken }).toString();
 
     res.redirect(redirectUrl.toString());
   }
@@ -327,7 +334,8 @@ export class AuthController {
   })
   @SwaggerResponse({
     status: 302,
-    description: 'Redirects to frontend with tokens in query params',
+    description:
+      'Redirects to the frontend with the access token in the URL fragment (#accessToken=...). The refresh token is set as an httpOnly cookie.',
   })
   async facebookAuthCallback(
     @Req() req: RequestWithFacebookProfile,
@@ -338,9 +346,11 @@ export class AuthController {
     const redirectBase =
       this.configService.get<string>('GOOGLE_OAUTH_REDIRECT_URL') ??
       'http://localhost:3000/oauth/callback';
+    // The refresh token never travels in the URL: it is set as an httpOnly cookie on this response.
+    // The access token goes in the fragment, which browsers do not send to servers or in Referer.
+    setRefreshCookie(res, refreshToken, this.configService);
     const redirectUrl = new URL(redirectBase);
-    redirectUrl.searchParams.set('accessToken', accessToken);
-    redirectUrl.searchParams.set('refreshToken', refreshToken);
+    redirectUrl.hash = new URLSearchParams({ accessToken }).toString();
 
     res.redirect(redirectUrl.toString());
   }

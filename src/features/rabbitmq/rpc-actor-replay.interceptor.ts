@@ -18,7 +18,7 @@ const REPLAY_COUNTER_TIMEOUT_MS = 2_000;
  * for the length of the freshness window (`redis.incr`), so the first copy passes and any replay
  * gets 403. The gateway signs every send attempt separately, so its own retries are never replays.
  *
- * Only RPC calls carrying `actorSig` are checked. Other RPCs and HTTP requests pass through.
+ * Only RPC calls carrying `actorSig` or `oauthProfileSig` are checked. Other RPCs and HTTP requests pass through.
  */
 @Injectable()
 export class RpcActorReplayInterceptor implements NestInterceptor {
@@ -26,9 +26,18 @@ export class RpcActorReplayInterceptor implements NestInterceptor {
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getType() !== 'rpc') return next.handle();
-    const data = context.switchToRpc().getData<{ actorSig?: unknown } | undefined>();
-    if (typeof data?.actorSig !== 'string') return next.handle();
-    return from(this.claimSignature(data.actorSig)).pipe(switchMap(() => next.handle()));
+    const data = context
+      .switchToRpc()
+      .getData<{ actorSig?: unknown; oauthProfileSig?: unknown } | undefined>();
+    // An OAuth profile signature is single-use too: a captured copy must not mint a second login.
+    const signature =
+      typeof data?.actorSig === 'string'
+        ? data.actorSig
+        : typeof data?.oauthProfileSig === 'string'
+          ? data.oauthProfileSig
+          : undefined;
+    if (signature === undefined) return next.handle();
+    return from(this.claimSignature(signature)).pipe(switchMap(() => next.handle()));
   }
 
   private async claimSignature(actorSig: string): Promise<void> {

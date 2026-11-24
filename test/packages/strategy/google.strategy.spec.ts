@@ -12,6 +12,7 @@ describe('GoogleStrategy', () => {
       emails: [{ value: 'ann@example.com' }],
       name: { givenName: 'Ann', familyName: 'Lee' },
       photos: [{ value: 'https://img.example/ann.png' }],
+      _json: { email_verified: true },
       ...overrides,
     }) as never;
 
@@ -31,6 +32,19 @@ describe('GoogleStrategy', () => {
     );
     expect(() => build().validate('at', 'rt', profile({ emails: undefined }))).toThrow(
       'Google account has no public email',
+    );
+  });
+
+  it.each([
+    ['false', { email_verified: false }],
+    ['missing', {}],
+    ['a string', { email_verified: 'true' }],
+  ])('rejects an email whose email_verified is %s', (_label, json) => {
+    expect(() => build().validate('at', 'rt', profile({ _json: json }))).toThrow(
+      'Google account email is not verified',
+    );
+    expect(() => build().validate('at', 'rt', profile({ _json: undefined }))).toThrow(
+      'Google account email is not verified',
     );
   });
 
