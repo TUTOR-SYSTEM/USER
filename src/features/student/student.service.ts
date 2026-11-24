@@ -22,6 +22,7 @@ import {
   checkUuidValid,
   generateCode,
   generateRandomPassword,
+  sendAccountCreatedMail,
   hashData,
   pickFreeUsername,
   revokeAllUserSessions,
@@ -196,6 +197,7 @@ export class StudentService {
     // can avoid the parent's. An existing PARENT is linked by `parentId` and left as-is.
     let parentId: string | null = null;
     let newParent: NewParentInput | null = null;
+    let newParentPassword: string | null = null;
     if (dto.parentId) {
       const existingParent = await this.repo.findParentForActor({
         id: dto.parentId,
@@ -209,7 +211,9 @@ export class StudentService {
       if (sibling) {
         parentId = sibling.id;
       } else {
-        newParent = await this.buildNewParent(dto, tutorId);
+        const built = await this.buildNewParent(dto, tutorId);
+        newParent = built.parent;
+        newParentPassword = built.password;
         parentId = newParent.id;
       }
     }
@@ -224,6 +228,8 @@ export class StudentService {
       id: randomUUID(),
       email: dto.email || `${studentUsername}@no-email.local`,
       password: await hashData(studentPassword),
+      // Always true: the tutor/admin either generated or typed this password.
+      mustChangePassword: true,
       username: studentUsername,
       firstName,
       lastName,
@@ -242,6 +248,24 @@ export class StudentService {
     const student = newParent
       ? await this.repo.createStudentWithNewParent(newParent, studentData)
       : await this.repo.createStudent(studentData);
+
+    // Credentials are mailed only after the rows are written (best-effort, never fails the create).
+    if (newParent && newParentPassword !== null) {
+      await sendAccountCreatedMail(this.rmqProducer, {
+        userId: newParent.id,
+        email: newParent.email,
+        username: newParent.username,
+        displayName: newParent.firstName,
+        password: newParentPassword,
+      });
+    }
+    await sendAccountCreatedMail(this.rmqProducer, {
+      userId: studentData.id,
+      email: studentData.email,
+      username: studentUsername,
+      displayName: firstName,
+      password: studentPassword,
+    });
 
     return omitPassword(student);
   }
@@ -279,14 +303,17 @@ export class StudentService {
   private async buildNewParent(
     dto: CreateStudentDto,
     tutorId: string | null,
-  ): Promise<NewParentInput> {
+  ): Promise<{ parent: NewParentInput; password: string }> {
     const { firstName, lastName } = this.splitName(dto.parentName ?? '');
+    const password = dto.parentPassword ?? generateRandomPassword();
     const username = await this.generateUsernameFromName(firstName, lastName);
-    return {
+    const parent: NewParentInput = {
       id: randomUUID(),
       // `users.email` is UNIQUE: a parent without an email gets a unique placeholder, like students do.
       email: dto.parentEmail || `${username}@no-email.local`,
-      password: await hashData(dto.parentPassword ?? generateRandomPassword()),
+      password: await hashData(password),
+      // Only a generated parent password is temporary; a parent password typed by the creator is kept.
+      mustChangePassword: !dto.parentPassword,
       username,
       firstName,
       lastName,
@@ -296,6 +323,7 @@ export class StudentService {
       gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
       tutorId,
     };
+    return { parent, password };
   }
 
   /**
@@ -312,19 +340,23 @@ export class StudentService {
     if (sibling) return this.repo.update({ id: studentId, data: { parentId: sibling.id } });
 
     const parentCode = await this.generateUniqueCode();
-    const hashedParentPassword = await hashData(generateRandomPassword());
+    const parentPassword = generateRandomPassword();
+    const hashedParentPassword = await hashData(parentPassword);
     const { firstName, lastName } =
       dto.parentFirstName || dto.parentLastName
         ? { firstName: dto.parentFirstName ?? '', lastName: dto.parentLastName ?? '' }
         : this.splitName(dto.parentName ?? '');
     const parentUsername = await this.generateUsernameFromName(firstName, lastName);
     // `users.email` is UNIQUE, so a parent without an email gets a unique placeholder (never '').
-    return this.repo.createParentAndLinkStudent({
+    const parentUserId = randomUUID();
+    const parentEmail = dto.parentEmail || `${parentUsername}@no-email.local`;
+    const created = await this.repo.createParentAndLinkStudent({
       studentId,
       parent: {
-        id: randomUUID(),
-        email: dto.parentEmail || `${parentUsername}@no-email.local`,
+        id: parentUserId,
+        email: parentEmail,
         password: hashedParentPassword,
+        mustChangePassword: true,
         username: parentUsername,
         firstName,
         lastName,
@@ -338,6 +370,14 @@ export class StudentService {
         province: dto.parentProvince || null,
       },
     });
+    await sendAccountCreatedMail(this.rmqProducer, {
+      userId: parentUserId,
+      email: parentEmail,
+      username: parentUsername,
+      displayName: firstName,
+      password: parentPassword,
+    });
+    return created;
   }
 
   /** PARENT accounts the caller can attach to a student (picker): ADMIN all, TUTOR their own. */
@@ -627,7 +667,11 @@ export class StudentService {
     const student = await this.repo.findById({ id });
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     assertCanManage(actor, student);
-    await this.repo.update({ id, data: { password: await hashData(password) } });
+    // An admin-set password is temporary: the student must choose their own at next sign-in.
+    await this.repo.update({
+      id,
+      data: { password: await hashData(password), mustChangePassword: true },
+    });
     // A new password must end every session the old one had (same as the tutor path).
     await revokeAllUserSessions(this.rmqProducer, id);
     return { id, passwordUpdated: true };

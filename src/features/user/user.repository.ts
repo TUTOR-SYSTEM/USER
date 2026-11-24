@@ -89,8 +89,13 @@ export class UserRepository {
     return this.updateOrNull(id, { ...data, updatedAt: new Date() });
   }
 
+  /** Writes a new password and clears `mustChangePassword`: the user has chosen their own password now. */
   async updatePassword(id: string, hashedPassword: string) {
-    return this.updateOrNull(id, { password: hashedPassword, updatedAt: new Date() });
+    return this.updateOrNull(id, {
+      password: hashedPassword,
+      mustChangePassword: false,
+      updatedAt: new Date(),
+    });
   }
 
   async delete(id: string) {

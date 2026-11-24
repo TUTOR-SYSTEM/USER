@@ -40,6 +40,7 @@ export type User = {
   phone: string | null;
   isActive: boolean | null;
   emailVerified: boolean;
+  mustChangePassword: boolean;
   role: string | null;
   gradesId: string[];
   createdAt: Date;

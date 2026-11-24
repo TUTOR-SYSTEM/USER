@@ -33,7 +33,8 @@ export const createManagedUserSchema = z
       .trim()
       .min(2, { message: 'Last name must be at least 2 characters' })
       .max(100, { message: 'Last name must be at most 100 characters' }),
-    password: managedPasswordSchema,
+    // Optional: omitted → a random password is generated.
+    password: managedPasswordSchema.optional(),
     phone: z.string().trim().max(20, { message: 'Phone must be at most 20 characters' }).optional(),
     gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
     dateOfBirth: z.coerce.date().optional(),

@@ -9,3 +9,4 @@ export * from './session.helper';
 export * from './session-check.helper';
 export * from './rpc-actor.helper';
 export * from './rpc-actor-signature.helper';
+export * from './account-mail.helper';

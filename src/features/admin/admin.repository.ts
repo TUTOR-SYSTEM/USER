@@ -4,7 +4,7 @@ import type { Prisma } from '../../generated/prisma/client';
 import { MAX_SEARCH_TOKENS, type JwtUserRole } from '@packages/helpers';
 
 /** A managed account handled by the admin module. */
-export type ManagedRole = Extract<JwtUserRole, 'TUTOR' | 'STUDENT'>;
+export type ManagedRole = Extract<JwtUserRole, 'TUTOR' | 'STUDENT' | 'PARENT'>;
 
 /** Columns returned to the admin — never leaks the password hash. */
 const publicColumns = {
