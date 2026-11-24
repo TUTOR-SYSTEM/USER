@@ -1,4 +1,4 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 
 /** Cryptographically secure random code (userCode / student code). */
 export function generateCode(length = 6): string {
@@ -12,13 +12,33 @@ export function generateCode(length = 6): string {
   return result;
 }
 
+const PASSWORD_LOWER = 'abcdefghijkmnopqrstuvwxyz'; // no 'l'
+const PASSWORD_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no 'I', 'O'
+const PASSWORD_DIGITS = '23456789'; // no '0', '1'
+const PASSWORD_SPECIAL = '!@#$%^&*';
+
 /**
- * Cryptographically secure random password for accounts created without a user-chosen one.
- * The plaintext is never returned or logged — it is hashed and stored; the account is reached
- * through the password-reset flow.
+ * Cryptographically secure random password (default 10 chars) for accounts created without a
+ * user-chosen one. Always satisfies the password policy (`password.schema.ts`): at least one
+ * lowercase, uppercase, digit and special character, within the 8–20 managed-password limit.
+ * Look-alike characters are left out so it can be read out of an email.
  */
-export function generateRandomPassword(bytes = 24): string {
-  return randomBytes(bytes).toString('base64url');
+export function generateRandomPassword(length = 10): string {
+  const pick = (set: string) => set[randomInt(set.length)];
+  const all = PASSWORD_LOWER + PASSWORD_UPPER + PASSWORD_DIGITS + PASSWORD_SPECIAL;
+  const chars = [
+    pick(PASSWORD_LOWER),
+    pick(PASSWORD_UPPER),
+    pick(PASSWORD_DIGITS),
+    pick(PASSWORD_SPECIAL),
+  ];
+  while (chars.length < length) chars.push(pick(all));
+  // Fisher–Yates with a CSPRNG so the guaranteed characters are not always first.
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
 }
 
 export const checkUuidValid = ({ data }: { data: string }): boolean => {

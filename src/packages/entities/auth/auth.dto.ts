@@ -24,6 +24,7 @@ export type LoginResponseDto = {
     email: string;
     userCode: string | null;
     username: string;
+    mustChangePassword: boolean;
   };
 };
 

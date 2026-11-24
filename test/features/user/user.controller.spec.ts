@@ -133,7 +133,7 @@ describe('UserController', () => {
     it('createUser forwards the DTO', async () => {
       const dto = { email: 'n@x.io' } as never;
       await controller.createUser(dto);
-      expect(service.createUserService).toHaveBeenCalledWith(dto);
+      expect(service.createUserService).toHaveBeenCalledWith(dto, { sendCredentials: true });
     });
 
     it('updateUserController scopes the update to the caller id and role (self-service)', async () => {

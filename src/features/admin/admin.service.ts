@@ -18,9 +18,11 @@ import type {
 import {
   checkUuidValid,
   generateCode,
+  generateRandomPassword,
   hashData,
   pickFreeUsername,
   revokeAllUserSessions,
+  sendAccountCreatedMail,
   usernameBase,
 } from '@packages/helpers';
 import { RmqProducer } from '../rabbitmq/rmq.producer';
@@ -74,6 +76,27 @@ export class AdminService {
     await this.getManagedUser(id, 'TUTOR');
     await this.adminRepository.updateByIdAndRole(id, 'TUTOR', {
       password: await hashData(password),
+      // An admin-set password is temporary: the tutor must choose their own at next sign-in.
+      mustChangePassword: true,
+    });
+    await revokeAllUserSessions(this.rmqProducer, id);
+    return { id, passwordUpdated: true };
+  }
+
+  // ─── Parents ───────────────────────────────────────────────────────
+  async listParents(query: ListManagedUsersQueryDto, actor: UserActor) {
+    this.assertAdmin(actor);
+    return this.listManagedUsers('PARENT', query);
+  }
+
+  async setParentPassword(id: string, password: string, actor: UserActor) {
+    this.assertAdmin(actor);
+    this.assertUuid(id);
+    await this.getManagedUser(id, 'PARENT');
+    await this.adminRepository.updateByIdAndRole(id, 'PARENT', {
+      password: await hashData(password),
+      // Mật khẩu do admin đặt là tạm thời: phụ huynh phải tự đặt lại khi đăng nhập.
+      mustChangePassword: true,
     });
     await revokeAllUserSessions(this.rmqProducer, id);
     return { id, passwordUpdated: true };
@@ -174,7 +197,8 @@ export class AdminService {
       : await this.generateUsername(dto.firstName, dto.lastName);
 
     const userCode = role === 'TUTOR' ? await this.generateUniqueUserCode() : undefined;
-    const hashedPassword = await hashData(dto.password);
+    const plainPassword = dto.password ?? generateRandomPassword();
+    const hashedPassword = await hashData(plainPassword);
 
     const created = await this.adminRepository.create({
       id: randomUUID(),
@@ -183,6 +207,8 @@ export class AdminService {
       firstName: dto.firstName,
       lastName: dto.lastName,
       password: hashedPassword,
+      // Admin/tutor-created accounts (generated or typed password) must change it at first sign-in.
+      mustChangePassword: true,
       phone: dto.phone,
       gender: dto.gender,
       dateOfBirth: dto.dateOfBirth,
@@ -193,12 +219,19 @@ export class AdminService {
       role,
       ...(userCode ? { userCode } : {}),
     });
+    await sendAccountCreatedMail(this.rmqProducer, {
+      userId: created.id,
+      email,
+      username,
+      displayName: dto.firstName,
+      password: plainPassword,
+    });
     return this.mapRow(created);
   }
 
   private async listManagedUsers(role: ManagedRole, query: ListManagedUsersQueryDto) {
     const { rows, pagination } = await this.adminRepository.list({ role, ...query });
-    const key = role === 'TUTOR' ? 'tutors' : 'students';
+    const key = role === 'TUTOR' ? 'tutors' : role === 'PARENT' ? 'parents' : 'students';
     const mapped = rows.map((row) => this.mapRow(row));
     if (role === 'TUTOR') {
       return { [key]: await this.attachTutorLoad(mapped), pagination };

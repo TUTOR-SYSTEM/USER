@@ -85,6 +85,23 @@ export class AdminRpcController {
     );
   }
 
+  @MessagePattern('admin.listParents')
+  async listParents(@Payload() payload: ListManagedUsersQueryDto & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    return this.adminService.listParents(
+      parseRpcPayload<ListManagedUsersQueryDto>(listManagedUsersQuerySchema, rest),
+      actor,
+    );
+  }
+
+  @MessagePattern('admin.setParentPassword')
+  async setParentPassword(@Payload() payload: { id: string; password: string } & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    const { id, ...body } = rest;
+    const { password } = parseRpcPayload<SetManagedPasswordDto>(setManagedPasswordSchema, body);
+    return this.adminService.setParentPassword(id, password, actor);
+  }
+
   @MessagePattern('admin.listStudents')
   async listStudents(@Payload() payload: ListManagedUsersQueryDto & RpcActorPayload) {
     const { actor, rest } = splitRpcActor(payload);

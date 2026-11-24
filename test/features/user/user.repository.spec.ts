@@ -207,7 +207,7 @@ describe('UserRepository', () => {
       await expect(repo.updatePassword(ID, 'hash')).resolves.toEqual({ id: ID });
       expect(db.user.update).toHaveBeenCalledWith({
         where: { id: ID },
-        data: { password: 'hash', updatedAt: expect.any(Date) },
+        data: { password: 'hash', mustChangePassword: false, updatedAt: expect.any(Date) },
       });
       await expect(repo.updatePassword(ID, 'hash')).resolves.toBeNull();
     });

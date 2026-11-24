@@ -27,6 +27,8 @@ import type {
 import {
   checkUuidValid,
   compareData,
+  generateRandomPassword,
+  sendAccountCreatedMail,
   pickFreeUsername,
   usernameBase,
   hashData,
@@ -273,11 +275,15 @@ export class UserService {
     createUserDto: CreateUserInput,
     actor: UserActor,
   ): Promise<CreateUserResponseDto> {
-    if (actor.role === 'ADMIN') return this.createUserService(createUserDto);
+    if (actor.role === 'ADMIN')
+      return this.createUserService(createUserDto, { sendCredentials: true });
     if (actor.role === 'TUTOR' && actor.id !== '') {
       // The student belongs to the tutor who created it: without `tutorId` the tutor could not
       // read or manage the account afterwards.
-      return this.createUserService({ ...createUserDto, role: 'STUDENT', tutorId: actor.id });
+      return this.createUserService(
+        { ...createUserDto, role: 'STUDENT', tutorId: actor.id },
+        { sendCredentials: true },
+      );
     }
     throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
   }
@@ -288,7 +294,10 @@ export class UserService {
    */
   async createUserService(
     createUserDto: CreateUserInput,
-    { emailVerified = false }: { emailVerified?: boolean } = {},
+    {
+      emailVerified = false,
+      sendCredentials = false,
+    }: { emailVerified?: boolean; sendCredentials?: boolean } = {},
   ): Promise<CreateUserResponseDto> {
     const { firstName, lastName, password, username } = createUserDto;
     const email = normalizeEmail(createUserDto.email);
@@ -312,7 +321,8 @@ export class UserService {
     // Optional links must point at an existing account of the right role (never at a bad FK).
     if (createUserDto.parentId) await this.assertLinkTarget(id, createUserDto.parentId, 'PARENT');
     if (createUserDto.tutorId) await this.assertLinkTarget(id, createUserDto.tutorId, 'TUTOR');
-    const hashedPassword = await hashData(password);
+    const plainPassword = password ?? generateRandomPassword();
+    const hashedPassword = await hashData(plainPassword);
     const role = createUserDto.role ?? 'STUDENT';
     let userCode: string | undefined;
     if (role === 'TUTOR') {
@@ -343,7 +353,20 @@ export class UserService {
         password: hashedPassword,
         role,
         emailVerified,
+        // Staff-created STUDENT/TUTOR accounts must choose their own password at first sign-in.
+        mustChangePassword: sendCredentials && (role === 'STUDENT' || role === 'TUTOR'),
       });
+
+      // Staff-created accounts get their login credentials by mail; self sign-up/OAuth do not.
+      if (sendCredentials) {
+        await sendAccountCreatedMail(this.rmqProducer, {
+          userId: user.id,
+          email,
+          username: resolvedUsername!,
+          displayName: firstName,
+          password: plainPassword,
+        });
+      }
 
       return { message: 'User created successfully', data: omitPassword(user) };
     } catch (error) {
@@ -537,6 +560,9 @@ export class UserService {
     }
 
     await this.assertCurrentPassword(userId, dto.currentPassword, user.password);
+    if (await compareData(dto.newPassword, user.password)) {
+      throw new BadRequestException(ERROR_MESSAGES.NEW_PASSWORD_MUST_DIFFER);
+    }
 
     const [fresh] = await this.getUserByField({ field: 'id', value: userId });
     if (!fresh) {

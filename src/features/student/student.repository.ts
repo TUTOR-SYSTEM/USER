@@ -74,6 +74,7 @@ export type NewStudentInput = {
   school: string | null;
   parentId: string | null;
   tutorId: string | null;
+  mustChangePassword: boolean;
 };
 
 export type NewParentInput = {
@@ -88,6 +89,7 @@ export type NewParentInput = {
   relationship: string | null;
   gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
   tutorId: string | null;
+  mustChangePassword: boolean;
   address?: string | null;
   district?: string | null;
   province?: string | null;

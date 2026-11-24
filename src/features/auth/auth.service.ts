@@ -358,7 +358,13 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
-      user: { id: user.id, email: user.email, userCode: user.userCode, username: user.username },
+      user: {
+        id: user.id,
+        email: user.email,
+        userCode: user.userCode,
+        username: user.username,
+        mustChangePassword: user.mustChangePassword,
+      },
     };
   }
 

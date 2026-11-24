@@ -129,7 +129,7 @@ export class UserController {
     @Body(new ZodValidationPipe(createUserSchema))
     createUserDto: CreateUserDto,
   ): Promise<CreateUserResponseDto> {
-    return this.userService.createUserService(createUserDto);
+    return this.userService.createUserService(createUserDto, { sendCredentials: true });
   }
 
   @Put('updateUser')

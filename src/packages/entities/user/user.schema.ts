@@ -191,7 +191,8 @@ export const createUserSchema = z.object({
     .trim()
     .min(2, { message: 'Last name must be at least 2 characters' })
     .max(100, { message: 'Last name must be at most 100 characters' }),
-  password: newPasswordSchema,
+  // Optional: omitted → a random password is generated.
+  password: newPasswordSchema.optional(),
   phone: z.string().trim().max(20, { message: 'Phone must be at most 20 characters' }).optional(),
   avatar: z
     .string({ message: 'Avatar must be string ...' })
