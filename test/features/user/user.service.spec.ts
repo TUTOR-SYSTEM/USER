@@ -524,6 +524,20 @@ describe('UserService', () => {
       expect(repo.findWithPassword).not.toHaveBeenCalled();
     });
 
+    it('refuses with 429 once the current password was guessed wrong too often', async () => {
+      repo.findWithPassword.mockResolvedValue({ password: await hashData('real-old') });
+      rmq.send.mockResolvedValueOnce({ count: 6 });
+
+      await expect(
+        service.changePasswordService(
+          USER_ID,
+          { currentPassword: 'real-old', newPassword: 'New-1' } as never,
+          SID,
+        ),
+      ).rejects.toMatchObject({ status: 429 });
+      expect(repo.updatePassword).not.toHaveBeenCalled();
+    });
+
     it('rejects a wrong current password and does not change anything', async () => {
       repo.findWithPassword.mockResolvedValue({ password: await hashData('real-old') });
 
@@ -564,7 +578,8 @@ describe('UserService', () => {
     it('leaves the password unchanged when revoking the old sessions fails', async () => {
       repo.findWithPassword.mockResolvedValue({ password: await hashData('real-old') });
       repo.findByField.mockResolvedValue([row()]);
-      rmq.send.mockRejectedValueOnce(new Error('redis down'));
+      // The attempt counter answers; the revoke that follows is what fails.
+      rmq.send.mockResolvedValueOnce({ count: 1 }).mockRejectedValueOnce(new Error('redis down'));
 
       await expect(
         service.changePasswordService(

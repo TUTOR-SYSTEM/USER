@@ -67,7 +67,14 @@ export const updateManagedUserSchema = z
       .nullable()
       .optional(),
     description: z.string().max(5000).nullable().optional(),
-    avatar: z.string().url({ message: 'Avatar must be a url ...' }).regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' }).nullable().optional(),
+    avatar: z
+      .string()
+      .url({ message: 'Avatar must be a url ...' })
+      .regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, {
+        message: 'Avatar must be an image (jpg, png, webp, gif)',
+      })
+      .nullable()
+      .optional(),
     isActive: z.boolean().optional(),
   })
   .strict();
@@ -91,7 +98,7 @@ export const updateManagedStudentSchema = updateManagedUserSchema.extend({
 export const listManagedUsersQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
-  search: z.string().trim().min(1).optional(),
+  search: z.string().trim().min(1).max(100).optional(),
   isActive: z
     .enum(['true', 'false'])
     .transform((value) => value === 'true')

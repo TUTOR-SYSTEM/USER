@@ -5,6 +5,12 @@ import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { RmqProducer } from './features/rabbitmq/rmq.producer';
 import { PrismaService } from './database/database.module';
 
+/** Debug RPCs log the shape of what they receive, never the values (it may carry personal data). */
+function describePayload(data: unknown): string {
+  if (data === null || typeof data !== 'object') return typeof data;
+  return `{${Object.keys(data).join(',')}}`;
+}
+
 @ApiTags('Health')
 @Controller()
 export class AppController {
@@ -28,23 +34,23 @@ export class AppController {
 
   @EventPattern('kafka.emit')
   emitRequestFromKafka(@Payload() data: unknown): void {
-    this.logger.log(`[EMIT] kafka.ping <- gateway, payload=${JSON.stringify(data)}`);
+    this.logger.log(`[EMIT] kafka.ping <- gateway, payload=${describePayload(data)}`);
   }
 
   @MessagePattern('kafka.ping')
   sendRequestFromKafka(@Payload() data: unknown): void {
-    this.logger.log(`[EMIT] kafka.ping <- gateway, payload=${JSON.stringify(data)}`);
+    this.logger.log(`[EMIT] kafka.ping <- gateway, payload=${describePayload(data)}`);
   }
 
   @MessagePattern('kafka.user.error')
   receivedError(@Payload() data: unknown): void {
-    this.logger.log(`[SEND] kafka.ping <- gateway, payload=${JSON.stringify(data)}`);
+    this.logger.log(`[SEND] kafka.ping <- gateway, payload=${describePayload(data)}`);
     throw new BadRequestException('data from user failed ...');
   }
 
   @MessagePattern('kafka.user')
   async receivedMsgError(@Payload() data: unknown) {
-    this.logger.log(`[SEND] kafka.ping <- gateway, payload=${JSON.stringify(data)}`);
+    this.logger.log(`[SEND] kafka.ping <- gateway, payload=${describePayload(data)}`);
     return await this.rmqProducer.send<unknown, unknown>('kafka.tutor', data);
   }
 
@@ -54,7 +60,7 @@ export class AppController {
     const requestId = `user-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
     this.logger.log(
-      `[RECEIVE-START] requestId=${requestId} kafka.send <- gateway, payload=${JSON.stringify(data)}`,
+      `[RECEIVE-START] requestId=${requestId} kafka.send <- gateway, payload=${describePayload(data)}`,
     );
 
     try {
@@ -102,23 +108,19 @@ export class AppController {
     }
   }
 
+  /**
+   * Database health. Counts only: it never loads user rows, and it returns no personal data
+   * (the old `fetchData` sample of user emails is gone).
+   */
   @MessagePattern('health.postgres')
-  async checkPostgresHealth(@Payload() payload?: { fetchData?: boolean }): Promise<unknown> {
+  async checkPostgresHealth(): Promise<unknown> {
     this.logger.log('[HEALTH] Checking PostgreSQL connection');
     try {
-      const shouldFetchData = payload?.fetchData ?? false;
+      const groups = await this.db.user.groupBy({ by: ['role'], _count: { _all: true } });
+      const count = (role: string) => groups.find((g) => g.role === role)?._count._all ?? 0;
+      const totalUsers = groups.reduce((sum, g) => sum + g._count._all, 0);
 
-      // Get total user count
-      const allUsers = await this.db.user.findMany();
-      const totalUsers = allUsers.length;
-
-      // Get users by role
-      const adminUsers = allUsers.filter((u) => u.role === 'ADMIN');
-      const tutorUsers = allUsers.filter((u) => u.role === 'TUTOR');
-      const studentUsers = allUsers.filter((u) => u.role === 'STUDENT');
-      const parentUsers = allUsers.filter((u) => u.role === 'PARENT');
-
-      const stats = {
+      return {
         status: 'healthy',
         database: 'PostgreSQL',
         connection: 'connected',
@@ -127,30 +129,13 @@ export class AppController {
         stats: {
           totalUsers,
           byRole: {
-            admin: adminUsers.length,
-            tutor: tutorUsers.length,
-            student: studentUsers.length,
-            parent: parentUsers.length,
+            admin: count('ADMIN'),
+            tutor: count('TUTOR'),
+            student: count('STUDENT'),
+            parent: count('PARENT'),
           },
         },
       };
-
-      if (shouldFetchData && totalUsers > 0) {
-        // Return sample users (limit to 5)
-        stats['sampleUsers'] = allUsers.slice(0, 5).map((u) => ({
-          id: u.id,
-          email: u.email,
-          username: u.username,
-          firstName: u.firstName,
-          lastName: u.lastName,
-          role: u.role,
-          isActive: u.isActive,
-          createdAt: u.createdAt,
-        }));
-      }
-
-      this.logger.log('[HEALTH] PostgreSQL connection OK, fetched data');
-      return stats;
     } catch (error) {
       this.logger.error(`[HEALTH] PostgreSQL connection failed: ${error}`);
       return {
@@ -158,7 +143,7 @@ export class AppController {
         database: 'PostgreSQL',
         connection: 'failed',
         timestamp: new Date().toISOString(),
-        message: error instanceof Error ? error.message : 'Database connection failed',
+        message: 'Database connection failed',
       };
     }
   }

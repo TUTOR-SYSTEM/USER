@@ -59,6 +59,13 @@ methods) is the closer shape for what you're building, and lean on the inline co
   the actual write (its `dto` param is typed as the union of both schemas so it still accepts the
   wider student payload) and return via `getStudent` for the fully-enriched response. See
   `AdminService.updateStudent` / `updateManagedStudentSchema` (`admin.schema.ts`) as the reference.
+- **Tutors create parents, never edit them**: a PARENT account can be shared across tutors and its
+  email decides who can reset its password. In `StudentService.update`, a TUTOR sending `parent*`
+  fields for a student that already has a parent gets 403; ADMIN may edit (new email is unique-checked,
+  `emailVerified=false`, parent sessions revoked). Attaching an existing `parentId` (create and update)
+  goes through `StudentRepository.findParentForActor` — a TUTOR only reaches parents they created or
+  whose children they manage (same rule as the `getParents` picker), else 404. Run these checks before
+  any write. See `[[tutor-parent-edit-policy]]` memory.
 - **Role-gated self-update field restriction**: when a self-service update route
   (`@CurrentUser()`-scoped, e.g. `PUT /users`) must forbid one role from changing specific fields
   while an admin-by-id route (`PUT /users/:id`) stays unrestricted, don't add the check to the

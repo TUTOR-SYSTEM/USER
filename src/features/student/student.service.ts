@@ -17,11 +17,7 @@ import type {
   UpdateStudentDto,
 } from '@packages/entities/student';
 import type { UserActor } from '../user/user.service';
-import {
-  StudentRepository,
-  type NewParentInput,
-  type NewStudentInput,
-} from './student.repository';
+import { StudentRepository, type NewParentInput, type NewStudentInput } from './student.repository';
 import {
   checkUuidValid,
   generateCode,
@@ -137,7 +133,8 @@ export class StudentService {
   ): Promise<string> {
     const username = await pickFreeUsername(
       usernameBase(firstName, lastName, '_'),
-      async (candidate) => reserved.includes(candidate) || (await this.repo.usernameExists(candidate)),
+      async (candidate) =>
+        reserved.includes(candidate) || (await this.repo.usernameExists(candidate)),
       '_',
     );
     if (username) return username;
@@ -200,7 +197,10 @@ export class StudentService {
     let parentId: string | null = null;
     let newParent: NewParentInput | null = null;
     if (dto.parentId) {
-      const existingParent = await this.repo.findParentById({ id: dto.parentId });
+      const existingParent = await this.repo.findParentForActor({
+        id: dto.parentId,
+        ownerTutorId: actor.role === 'TUTOR' ? actor.id : undefined,
+      });
       if (!existingParent) throw new NotFoundException(ERROR_MESSAGES.PARENT_NOT_FOUND);
       parentId = existingParent.id;
     } else if (dto.parentName) {
@@ -269,13 +269,17 @@ export class StudentService {
     const existing = await this.repo.findUserByEmail({ email });
     if (!existing) return null;
     const usable =
-      existing.role === 'PARENT' && (actor.role === 'ADMIN' || existing.tutorId === managingTutorId);
+      existing.role === 'PARENT' &&
+      (actor.role === 'ADMIN' || existing.tutorId === managingTutorId);
     if (!usable) throw this.parentEmailTaken();
     return { id: existing.id };
   }
 
   /** A new PARENT row from the create form (not written yet). */
-  private async buildNewParent(dto: CreateStudentDto, tutorId: string | null): Promise<NewParentInput> {
+  private async buildNewParent(
+    dto: CreateStudentDto,
+    tutorId: string | null,
+  ): Promise<NewParentInput> {
     const { firstName, lastName } = this.splitName(dto.parentName ?? '');
     const username = await this.generateUsernameFromName(firstName, lastName);
     return {
@@ -492,6 +496,41 @@ export class StudentService {
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     assertCanManage(actor, student);
 
+    // A TUTOR may create a parent (with the student) but never edit one afterwards: a PARENT account
+    // can be shared across tutors, and its email decides who can reset its password. Only ADMIN edits.
+    const hasParentField =
+      dto.parentName !== undefined ||
+      dto.parentLastName !== undefined ||
+      dto.parentFirstName !== undefined ||
+      dto.parentPhone !== undefined ||
+      dto.parentEmail !== undefined ||
+      dto.parentRelationship !== undefined ||
+      dto.parentAddress !== undefined ||
+      dto.parentDistrict !== undefined ||
+      dto.parentProvince !== undefined;
+    const editsExistingParent = dto.parentId === undefined && hasParentField && !!student.parentId;
+    if (actor.role === 'TUTOR' && editsExistingParent) {
+      throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+    }
+    // Checked before any write, so a rejected request leaves nothing half-updated.
+    let relinkParentId: string | undefined;
+    if (dto.parentId !== undefined) {
+      const existingParent = await this.repo.findParentForActor({
+        id: dto.parentId,
+        ownerTutorId: actor.role === 'TUTOR' ? actor.id : undefined,
+      });
+      if (!existingParent) throw new NotFoundException(ERROR_MESSAGES.PARENT_NOT_FOUND);
+      relinkParentId = existingParent.id;
+    }
+    const parentEmailChanged =
+      editsExistingParent &&
+      dto.parentEmail !== undefined &&
+      dto.parentEmail !== student.parent?.email;
+    if (parentEmailChanged) {
+      const holder = await this.repo.findUserByEmail({ email: dto.parentEmail! });
+      if (holder && holder.id !== student.parentId) throw this.parentEmailTaken();
+    }
+
     // ── student fields ──
     const studentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
     if (dto.firstName !== undefined || dto.lastName !== undefined) {
@@ -529,23 +568,10 @@ export class StudentService {
     }
 
     // ── parent fields ──
-    const hasParentField =
-      dto.parentName !== undefined ||
-      dto.parentLastName !== undefined ||
-      dto.parentFirstName !== undefined ||
-      dto.parentPhone !== undefined ||
-      dto.parentEmail !== undefined ||
-      dto.parentRelationship !== undefined ||
-      dto.parentAddress !== undefined ||
-      dto.parentDistrict !== undefined ||
-      dto.parentProvince !== undefined;
-
-    if (dto.parentId !== undefined) {
+    if (relinkParentId !== undefined) {
       // Re-link to an existing PARENT. Only the link changes: the parent's own record is left as-is,
       // since it may be shared with the student's siblings.
-      const existingParent = await this.repo.findParentById({ id: dto.parentId });
-      if (!existingParent) throw new NotFoundException(ERROR_MESSAGES.PARENT_NOT_FOUND);
-      updated = (await this.repo.update({ id, data: { parentId: existingParent.id } })) ?? student;
+      updated = (await this.repo.update({ id, data: { parentId: relinkParentId } })) ?? student;
     } else if (hasParentField) {
       if (student.parentId) {
         const parentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
@@ -558,7 +584,11 @@ export class StudentService {
           parentUpdate.lastName = lastName;
         }
         if (dto.parentPhone !== undefined) parentUpdate.phone = dto.parentPhone || null;
-        if (dto.parentEmail !== undefined) parentUpdate.email = dto.parentEmail;
+        if (dto.parentEmail !== undefined) {
+          parentUpdate.email = dto.parentEmail;
+          // The new address is unproven: it must be verified again.
+          if (parentEmailChanged) parentUpdate.emailVerified = false;
+        }
         if (dto.parentRelationship !== undefined)
           parentUpdate.relationship = dto.parentRelationship;
         if (dto.parentAddress !== undefined) parentUpdate.address = dto.parentAddress || null;
@@ -566,6 +596,8 @@ export class StudentService {
         if (dto.parentProvince !== undefined) parentUpdate.province = dto.parentProvince || null;
         if (Object.keys(parentUpdate).length > 0) {
           await this.repo.updateParent({ id: student.parentId, data: parentUpdate });
+          // An email change must not leave the parent's old sessions alive.
+          if (parentEmailChanged) await revokeAllUserSessions(this.rmqProducer, student.parentId);
         }
       } else if (dto.parentName || dto.parentFirstName || dto.parentLastName) {
         // No parent linked yet: reuse the tutor's parent with this email (a sibling), else create one.

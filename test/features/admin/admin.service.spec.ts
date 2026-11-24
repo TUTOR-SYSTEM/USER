@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { compareData } from '@packages/helpers';
 import { ERROR_MESSAGES } from 'src/data/constants';
 import { AdminService } from 'src/features/admin/admin.service';
@@ -324,6 +320,28 @@ describe('AdminService', () => {
         'TUTOR',
         expect.objectContaining({ email: 'fresh.mail@example.test' }),
       );
+    });
+
+    it('re-verifies a changed email and ends the account sessions', async () => {
+      repo.findByIdAndRole.mockResolvedValue(row({ email: 'old@example.test' }));
+      await service.updateTutor(USER_ID, { email: 'fresh@example.test' } as never, ADMIN_ACTOR);
+
+      expect(repo.updateByIdAndRole).toHaveBeenCalledWith(
+        USER_ID,
+        'TUTOR',
+        expect.objectContaining({ email: 'fresh@example.test', emailVerified: false }),
+      );
+      expect(rmq.send).toHaveBeenCalledWith('redis.delByPrefix', {
+        prefix: `session:${USER_ID}:`,
+      });
+    });
+
+    it('keeps verification and sessions when the email is only re-sent in a different case', async () => {
+      repo.findByIdAndRole.mockResolvedValue(row({ email: 'same@example.test' }));
+      await service.updateTutor(USER_ID, { email: 'SAME@example.test' } as never, ADMIN_ACTOR);
+
+      expect(repo.updateByIdAndRole.mock.calls[0][2]).not.toHaveProperty('emailVerified');
+      expect(rmq.send).not.toHaveBeenCalled();
     });
 
     it('rejects a username that another account already uses', async () => {

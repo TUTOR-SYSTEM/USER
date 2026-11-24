@@ -32,6 +32,23 @@ const SENSITIVE_KEYS = [
   'otp',
   'jti',
   'resetToken',
+  'verifyToken',
+  // Gateway signatures: single-use, but there is no reason to keep them in the request log table.
+  'actorSig',
+  'clientIpSig',
+  'oauthProfileSig',
+  // Contact details and addresses of people: request_logs must not become a copy of the user table.
+  'phone',
+  'studentPhone',
+  'parentPhone',
+  'address',
+  'parentAddress',
+  'district',
+  'parentDistrict',
+  'province',
+  'parentProvince',
+  'dateOfBirth',
+  'birthday',
 ];
 
 function readHeader(headers: Record<string, unknown> | undefined, key: string): string | undefined {

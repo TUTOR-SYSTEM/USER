@@ -1,6 +1,13 @@
+import { ForbiddenException } from '@nestjs/common';
 import type { ZodType } from 'zod';
+import { ERROR_MESSAGES } from 'src/data/constants';
 import { ZodValidationPipe } from '../pipes/zod-validation.pipe';
-import { verifyClientIpSignature, verifyRpcActorSignature } from './rpc-actor-signature.helper';
+import {
+  verifyClientIpSignature,
+  verifyOAuthProfileSignature,
+  verifyRpcActorSignature,
+  type OAuthProvider,
+} from './rpc-actor-signature.helper';
 
 /**
  * Caller identity the gateway forwards with every RPC call that acts on behalf of a user, plus the
@@ -62,4 +69,38 @@ export function splitClientIp<
   delete rest.clientIpSig;
   delete rest.clientIpSigTs;
   return { clientIp, rest: rest as Omit<T, 'clientIp' | 'clientIpSig' | 'clientIpSigTs'> };
+}
+
+/** Signature the gateway attaches to the OAuth profile it forwards. */
+export interface OAuthProfilePayload {
+  oauthProfileSig?: string;
+  oauthProfileSigTs?: number;
+}
+
+/**
+ * Verifies the gateway signature on an OAuth profile and returns the profile without the signature
+ * fields. An unsigned, forged or stale profile is refused with 403: it must never reach the
+ * find-or-create-account logic.
+ */
+export function splitOAuthProfile<T extends object>(
+  payload: T & OAuthProfilePayload,
+  provider: OAuthProvider,
+) {
+  const record = payload as Record<string, unknown>;
+  const providerId = provider === 'google' ? record.googleId : record.facebookId;
+  const verified = verifyOAuthProfileSignature(
+    provider,
+    {
+      providerId,
+      email: record.email,
+      oauthProfileSig: record.oauthProfileSig,
+      oauthProfileSigTs: record.oauthProfileSigTs,
+    },
+    process.env.RPC_ACTOR_SECRET,
+  );
+  if (!verified) throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+  const rest: Record<string, unknown> = { ...record };
+  delete rest.oauthProfileSig;
+  delete rest.oauthProfileSigTs;
+  return rest;
 }

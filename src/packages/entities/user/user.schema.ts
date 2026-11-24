@@ -15,7 +15,7 @@ export const getUsersQuerySchema = z.preprocess(
   z.object({
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(10),
-    search: z.string().trim().min(1).optional(),
+    search: z.string().trim().min(1).max(100).optional(),
     role: z.enum(['ADMIN', 'TUTOR', 'PARENT', 'STUDENT']).optional(),
     isActive: z
       .enum(['true', 'false'])
@@ -78,6 +78,8 @@ export const updateGradeSchema = z.object({
 export const updateUserSchema = z
   .object({
     email: z.string().trim().email({ message: 'Invalid email address' }).optional(),
+    // Only read when the caller changes their OWN email; never written to the row.
+    currentPassword: loginPasswordSchema.optional(),
     username: z
       .string()
       .trim()
@@ -96,7 +98,15 @@ export const updateUserSchema = z
       .min(2, { message: 'Last name must be at least 2 characters' })
       .max(100, { message: 'Last name must be at most 100 characters' })
       .optional(),
-    avatar: z.string().url({ message: 'Avatar must be a url ...' }).regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' }).nullable().optional(),
+    avatar: z
+      .string()
+      .url({ message: 'Avatar must be a url ...' })
+      .regex(/^https?:\/\//i, { message: 'Avatar must be an http(s) URL' })
+      .regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, {
+        message: 'Avatar must be an image (jpg, png, webp, gif)',
+      })
+      .nullable()
+      .optional(),
     phone: z
       .string()
       .trim()
@@ -185,7 +195,11 @@ export const createUserSchema = z.object({
   phone: z.string().trim().max(20, { message: 'Phone must be at most 20 characters' }).optional(),
   avatar: z
     .string({ message: 'Avatar must be string ...' })
-    .url({ message: 'Avatar must be url ...' }).regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' })
+    .url({ message: 'Avatar must be url ...' })
+    .regex(/^https?:\/\//i, { message: 'Avatar must be an http(s) URL' })
+    .regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, {
+      message: 'Avatar must be an image (jpg, png, webp, gif)',
+    })
     .optional(),
   isActive: z.boolean({ message: 'isActive must be true or false ...' }).default(true),
   description: z.string().default(''),

@@ -120,3 +120,19 @@ export const verifyEmailSchema = z.object({
     .string({ message: AUTH_MESSAGES.VERIFY_EMAIL_TOKEN_REQUIRED })
     .uuid({ message: AUTH_MESSAGES.VERIFY_EMAIL_TOKEN_INVALID }),
 });
+
+/** Profile the gateway forwards after a Google/Facebook callback (signature already verified). */
+const oauthProfileBase = {
+  email: emailFieldSchema,
+  firstName: z.string().trim().min(1).max(255),
+  lastName: z.string().trim().min(1).max(255),
+  avatar: z.string().max(2000).optional(),
+};
+export const googleProfileSchema = z.object({
+  googleId: z.string().min(1).max(200),
+  ...oauthProfileBase,
+});
+export const facebookProfileSchema = z.object({
+  facebookId: z.string().min(1).max(200),
+  ...oauthProfileBase,
+});

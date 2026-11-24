@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { ERROR_MESSAGES } from 'src/data/constants';
+import { createHash } from 'node:crypto';
 import { hashData, hashRefreshToken } from '@packages/helpers';
 import { AuthService } from 'src/features/auth/auth.service';
 import type { UserService } from 'src/features/user/user.service';
@@ -55,6 +56,14 @@ function fakeRmq() {
       }
       case 'redis.exists':
         return store.has(payload.key as string);
+      case 'redis.incr': {
+        const count = Number(store.get(payload.key as string) ?? 0) + 1;
+        store.set(payload.key as string, String(count));
+        return { count };
+      }
+      case 'email.sendPasswordResetOtp':
+      case 'email.sendVerifyEmail':
+        return { ok: true };
       case 'redis.delByPrefix': {
         let deleted = 0;
         for (const k of [...store.keys()]) {
@@ -415,6 +424,89 @@ describe('AuthService', () => {
         service.forgotPasswordService({ email: 'student@example.test' }),
       ).resolves.toEqual({
         ok: true,
+      });
+    });
+  });
+
+  describe('forgot password quota', () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const mailsSent = () =>
+      rmq.send.mock.calls.filter(([pattern]) => pattern === 'email.sendPasswordResetOtp').length;
+
+    it('sends at most 3 reset codes per address per window, and answers the same each time', async () => {
+      userService.getUserByField.mockResolvedValue([user()]);
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          service.forgotPasswordService({ email: 'Student@Example.test' }),
+        ).resolves.toEqual({ ok: true });
+        await flush();
+      }
+      expect(mailsSent()).toBe(3);
+    });
+
+    it('counts unknown addresses too, so the quota reveals nothing', async () => {
+      for (let i = 0; i < 4; i++) {
+        await service.forgotPasswordService({ email: 'nobody@b.test' });
+      }
+      expect(mailsSent()).toBe(0);
+      const key = [...rmq.store.keys()].find((k) => k.startsWith('forgot-password-rate:'));
+      expect(rmq.store.get(key as string)).toBe('4');
+    });
+
+    it('sends nothing when the counter is unavailable (fails closed)', async () => {
+      userService.getUserByField.mockResolvedValue([user()]);
+      const original = rmq.send.getMockImplementation()!;
+      rmq.send.mockImplementation(async (pattern, payload) => {
+        if (pattern === 'redis.incr') throw new Error('redis down');
+        return original(pattern, payload);
+      });
+      await expect(
+        service.forgotPasswordService({ email: 'student@example.test' }),
+      ).resolves.toEqual({ ok: true });
+      await flush();
+      expect(mailsSent()).toBe(0);
+    });
+  });
+
+  describe('reset password attempt cap', () => {
+    const OTP = '111111';
+    const putCode = (codeId: string) => {
+      const salt = 'salt-' + codeId;
+      rmq.store.set(
+        `reset-password-otp:${USER_ID}`,
+        JSON.stringify({
+          codeId,
+          salt,
+          hash: createHash('sha256').update(`${salt}:${OTP}`).digest('hex'),
+        }),
+      );
+    };
+    const reset = (otp: string) =>
+      service.resetPasswordService({
+        email: 'student@example.test',
+        otp,
+        password: 'New-pass-1!',
+        confirmPassword: 'New-pass-1!',
+      });
+
+    beforeEach(() => userService.getUserByField.mockResolvedValue([user()]));
+
+    it('stops guessing after 10 tries in a window even when a fresh code is requested each time', async () => {
+      for (let i = 0; i < 10; i++) {
+        putCode(`code-${i}`); // what forgotPassword does: a new code with its own fresh counter
+        await expect(reset('000000')).rejects.toThrow(BadRequestException);
+      }
+      putCode('code-final');
+      await expect(reset(OTP)).rejects.toMatchObject({ status: 429 });
+      expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
+    });
+
+    it('accepts the right code within the cap and clears the window counter', async () => {
+      putCode('code-ok');
+      await expect(reset(OTP)).resolves.toEqual({ ok: true });
+      expect(userService.updateUserPasswordService).toHaveBeenCalledTimes(1);
+      expect(rmq.emit).toHaveBeenCalledWith('redis.del', {
+        keys: [`reset-password-otp-window:${USER_ID}`],
       });
     });
   });

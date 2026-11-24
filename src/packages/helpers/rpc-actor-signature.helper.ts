@@ -74,3 +74,47 @@ export function verifyClientIpSignature(
   const right = Buffer.from(clientIpSig, 'utf8');
   return left.length === right.length && timingSafeEqual(left, right) ? clientIp : undefined;
 }
+
+/** Providers whose sign-in profile the gateway forwards (`auth.googleLogin` / `auth.facebookLogin`). */
+export type OAuthProvider = 'google' | 'facebook';
+
+/**
+ * Signature over the OAuth profile the gateway forwards after the provider's callback. Without it,
+ * anyone able to publish on `user_queue` could ask for tokens for any student email. Bound to the
+ * provider, so a Google signature is not accepted for the Facebook pattern.
+ */
+export function computeOAuthProfileSignature(
+  input: { provider: OAuthProvider; providerId: string; email: string },
+  sigTs: number,
+  secret: string,
+): string {
+  return createHmac('sha256', secret)
+    .update(`oauth|${input.provider}|${input.providerId}|${input.email}|${sigTs}`)
+    .digest('hex');
+}
+
+/** True only for a fresh, matching signature. Fails closed on a missing secret or field. */
+export function verifyOAuthProfileSignature(
+  provider: OAuthProvider,
+  input: {
+    providerId?: unknown;
+    email?: unknown;
+    oauthProfileSig?: unknown;
+    oauthProfileSigTs?: unknown;
+  },
+  secret: string | undefined,
+  now: number = Date.now(),
+): boolean {
+  const { providerId, email, oauthProfileSig, oauthProfileSigTs } = input;
+  if (!secret || typeof providerId !== 'string' || typeof email !== 'string') return false;
+  if (typeof oauthProfileSig !== 'string' || typeof oauthProfileSigTs !== 'number') return false;
+  if (Math.abs(now - oauthProfileSigTs) > RPC_ACTOR_MAX_AGE_MS) return false;
+  const expected = computeOAuthProfileSignature(
+    { provider, providerId, email },
+    oauthProfileSigTs,
+    secret,
+  );
+  const left = Buffer.from(expected, 'utf8');
+  const right = Buffer.from(oauthProfileSig, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
+}

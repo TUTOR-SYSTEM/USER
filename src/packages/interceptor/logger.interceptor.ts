@@ -15,6 +15,24 @@ const SENSITIVE_KEYS = [
   'jti',
   'resetToken',
   'verifyToken',
+  // Re-entering the current password (change password, change email).
+  'currentPassword',
+  // Gateway signatures: single-use, but there is no reason to keep them in logs.
+  'actorSig',
+  'clientIpSig',
+  'oauthProfileSig',
+  // Contact details and addresses of people (students, parents, tutors).
+  'phone',
+  'studentPhone',
+  'parentPhone',
+  'address',
+  'parentAddress',
+  'district',
+  'parentDistrict',
+  'province',
+  'parentProvince',
+  'dateOfBirth',
+  'birthday',
 ];
 const MAX_LOG_LENGTH = 1000;
 

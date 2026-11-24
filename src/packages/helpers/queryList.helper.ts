@@ -1,3 +1,6 @@
+/** Words of a search string that are used; the rest are ignored. */
+export const MAX_SEARCH_TOKENS = 5;
+
 type SearchableColumn = {
   /** Prisma model field name to match with a case-insensitive `contains`. */
   column: string;
@@ -49,7 +52,8 @@ export function buildListWhereClause<
     );
     // Each whitespace-separated word must match at least one searchable column. Names are stored
     // split across first/last columns, so "Test HS" has to match "Test" in one and "HS" in the other.
-    for (const token of search.trim().split(/\s+/)) {
+    // At most MAX_SEARCH_TOKENS words: each one adds an OR-group to the query.
+    for (const token of search.trim().split(/\s+/).slice(0, MAX_SEARCH_TOKENS)) {
       const tokenConditions = columns.map((item) => ({
         [item.column]: { contains: token, mode: 'insensitive' },
       }));

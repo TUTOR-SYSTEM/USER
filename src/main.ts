@@ -22,6 +22,14 @@ async function bootstrap() {
   if (!process.env.RPC_ACTOR_SECRET?.trim()) {
     throw new Error('RPC_ACTOR_SECRET must be set (shared with gateway)');
   }
+  if (process.env.RPC_ACTOR_SECRET.trim().length < 32) {
+    // Not fatal (it would stop a deploy whose secret is already shared with gateway), but a short
+    // secret makes the HMAC guessable: rotate it in both services.
+    Logger.warn(
+      'RPC_ACTOR_SECRET is shorter than 32 characters: use a long random value',
+      'Bootstrap',
+    );
+  }
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
@@ -78,6 +86,9 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ErrorInterceptor(), new LoggerInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
 
+  // The API docs list every route and its schema: open in development, opt-in elsewhere.
+  const docsEnabled =
+    process.env.NODE_ENV !== 'production' || process.env.SWAGGER_ENABLED === 'true';
   const config = new DocumentBuilder()
     .setTitle('User Service API')
     .setDescription('API documentation for the tutoring platform identity/user service')
@@ -97,12 +108,14 @@ async function bootstrap() {
     .addTag('Admin')
     .addTag('Health')
     .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api-docs', app, document, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-  });
+  if (docsEnabled) {
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api-docs', app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
+      },
+    });
+  }
 
   const port = process.env.PORT ?? 8888;
   await app.listen(port);

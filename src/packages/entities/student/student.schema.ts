@@ -21,7 +21,11 @@ export const createStudentSchema = z.object({
     .min(1, { message: 'Student name must be 1 character ...' })
     .max(255, { message: 'Student name must not over 255 character ...' }),
   // `users.userCode` is VarChar(6): a longer value would fail inside Postgres (500).
-  userCode: z.string().min(1, 'Code is required').max(6, 'Code must be at most 6 characters').optional(),
+  userCode: z
+    .string()
+    .min(1, 'Code is required')
+    .max(6, 'Code must be at most 6 characters')
+    .optional(),
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
   studentPhone: z.string().max(20).optional(),
   school: z.string().max(255).optional(),
@@ -63,7 +67,15 @@ export const updateStudentSchema = z.object({
   parentAddress: z.string().max(500).optional(),
   parentDistrict: z.string().max(30).optional(),
   parentProvince: z.string().max(30).optional(),
-  avatar: z.string().url().regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, { message: 'Avatar must be an image (jpg, png, webp, gif)' }).optional().nullable(),
+  avatar: z
+    .string()
+    .url()
+    .regex(/^https?:\/\//i, { message: 'Avatar must be an http(s) URL' })
+    .regex(/\.(jpe?g|png|webp|gif)(\?.*)?$/i, {
+      message: 'Avatar must be an image (jpg, png, webp, gif)',
+    })
+    .optional()
+    .nullable(),
 });
 
 export const setStudentPasswordSchema = z.object({
@@ -74,13 +86,13 @@ export const setStudentPasswordSchema = z.object({
 export const getParentsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
-  search: z.string().trim().min(1).optional(),
+  search: z.string().trim().min(1).max(100).optional(),
 });
 
 export const getStudentsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
-  search: z.string().trim().min(1).optional(),
+  search: z.string().trim().min(1).max(100).optional(),
   tutorId: z.string().uuid('Invalid tutor ID').optional(),
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
   // `z.coerce.boolean()` treats the string "false" as truthy — use an explicit enum instead so
