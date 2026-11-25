@@ -7,14 +7,16 @@ WORKDIR /app
 ENV npm_config_fetch_retries=5 \
     npm_config_fetch_retry_mintimeout=20000 \
     npm_config_fetch_retry_maxtimeout=120000
-# prisma/ + prisma.config.ts are needed here: the `postinstall` hook runs `prisma generate`.
+# prisma/ + prisma.config.ts are needed for the explicit `prisma generate` below.
 COPY package.json package-lock.json prisma.config.ts ./
 COPY prisma ./prisma
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --legacy-peer-deps --no-audit --no-fund
+    npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+# generate only needs the schema; dummy password just satisfies prisma.config.ts (build-time only)
+RUN POSTGRES_PASSWORD=build npx prisma generate
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
-RUN npm run build && test -f dist/main.js
+RUN node node_modules/@nestjs/cli/bin/nest.js build && test -f dist/main.js
 
 # --- PROD DEPS: runtime-only node_modules ---
 FROM node:22-alpine AS prod-deps
