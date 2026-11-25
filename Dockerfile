@@ -2,31 +2,32 @@
 
 # --- BUILD: full deps (incl. dev) + compile TS ---
 FROM node:22-alpine AS builder
+COPY --from=oven/bun:1-alpine /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /app
 # npm "Exit handler never called" / fetch failures are transient registry errors: retry the fetches.
 ENV npm_config_fetch_retries=5 \
     npm_config_fetch_retry_mintimeout=20000 \
     npm_config_fetch_retry_maxtimeout=120000
-# prisma/ + prisma.config.ts are needed for the explicit `prisma generate` below.
-COPY package.json package-lock.json prisma.config.ts ./
+# prisma/ + prisma.config.ts are needed here: the `postinstall` hook runs `prisma generate`.
+COPY package.json bun.lock prisma.config.ts ./
 COPY prisma ./prisma
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
-# generate only needs the schema; dummy password just satisfies prisma.config.ts (build-time only)
-RUN POSTGRES_PASSWORD=build npx prisma generate
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --ignore-scripts
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
-RUN node node_modules/@nestjs/cli/bin/nest.js build && test -f dist/main.js
+# prisma.config.ts requires POSTGRES_PASSWORD even for `prisma generate` (no DB connection is made)
+RUN POSTGRES_PASSWORD=build-placeholder npm run build && test -f dist/main.js
 
 # --- PROD DEPS: runtime-only node_modules ---
 FROM node:22-alpine AS prod-deps
+COPY --from=oven/bun:1-alpine /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /app
 ENV npm_config_fetch_retries=5 \
     npm_config_fetch_retry_mintimeout=20000 \
     npm_config_fetch_retry_maxtimeout=120000
-COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --omit=dev --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+COPY package.json bun.lock ./
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --production --ignore-scripts
 
 # --- RUNTIME ---
 FROM node:22-alpine
