@@ -10,7 +10,7 @@
   `../gateway` (the old `drizzle.config.ts` + `drizzle/` live there). To change a table/enum:
   change gateway's schema + migration, then mirror the change in `prisma/schema.prisma` (or run
   `bun run db:pull` against the migrated DB and review the diff), `bun run db:generate`, and fix
-  the repositories. Do not run `prisma db push` / `migrate` against the shared DB.
+  the repositories. Do not run `prisma db push` / `migrate` against the shared DB. A column added to `schema.prisma` makes every query on that model fail (`column ... does not exist`, e.g. `must_change_password` → `auth.login` 500) until gateway's migration (`../gateway/drizzle/*.sql`) has been applied to the DB, so apply it before running or deploying `user`.
 - **Access pattern**: inject `PrismaService` (from `database.module.ts`, global) into the
   repository — no `@Inject(DRIZZLE)`. Use `select` objects (`satisfies Prisma.UserSelect`) for
   projections that must hide `password`. Role-scoped writes use `updateMany`/`deleteMany`

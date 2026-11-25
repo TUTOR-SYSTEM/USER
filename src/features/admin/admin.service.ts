@@ -89,6 +89,16 @@ export class AdminService {
     return this.listManagedUsers('PARENT', query);
   }
 
+  async updateParent(id: string, dto: UpdateManagedUserDto, actor: UserActor) {
+    this.assertAdmin(actor);
+    return this.updateManagedUser(id, 'PARENT', dto);
+  }
+
+  async deleteParent(id: string, actor: UserActor) {
+    this.assertAdmin(actor);
+    return this.deleteManagedUser(id, 'PARENT');
+  }
+
   async setParentPassword(id: string, password: string, actor: UserActor) {
     this.assertAdmin(actor);
     this.assertUuid(id);
@@ -330,7 +340,11 @@ export class AdminService {
     this.assertUuid(id);
     const notFound = () =>
       new NotFoundException(
-        role === 'TUTOR' ? ERROR_MESSAGES.TUTOR_NOT_FOUND : ERROR_MESSAGES.STUDENT_NOT_FOUND,
+        role === 'TUTOR'
+          ? ERROR_MESSAGES.TUTOR_NOT_FOUND
+          : role === 'PARENT'
+            ? ERROR_MESSAGES.PARENT_NOT_FOUND
+            : ERROR_MESSAGES.STUDENT_NOT_FOUND,
       );
     const existing = await this.adminRepository.findByIdAndRole(id, role);
     if (!existing) throw notFound();

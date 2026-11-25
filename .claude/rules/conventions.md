@@ -85,6 +85,10 @@
   password write on purpose: a Redis failure then leaves the password unchanged, never changed with
   old sessions still alive.
   Gateway moves that token into the httpOnly cookie and never returns it in the body.
+- **Generated passwords**: `generateRandomPassword()` (`@packages/helpers`) returns 10 chars by default,
+  always with a lowercase, uppercase, digit and one of `!@#$%^&*`, no look-alikes (`l I O 0 1`), CSPRNG
+  (`randomInt` + Fisher–Yates). It satisfies `newPasswordSchema` and `managedPasswordSchema` (8–20), so keep it
+  inside those limits if the policy changes. It used to be 32-char base64url: don't assert that shape in tests.
 - **Any password write revokes sessions**: every path that sets a password (self change, reset,
   admin/staff set) must call `revokeAllUserSessions(rmqProducer, userId)` after the write, so old
   access and refresh tokens stop working. `UserService.updateUserPasswordService` and
