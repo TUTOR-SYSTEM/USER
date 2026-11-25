@@ -94,6 +94,23 @@ export class AdminRpcController {
     );
   }
 
+  @MessagePattern('admin.updateParent')
+  async updateParent(@Payload() payload: { id: string } & RpcActorPayload & UpdateManagedUserDto) {
+    const { actor, rest } = splitRpcActor(payload);
+    const { id, ...body } = rest;
+    return this.adminService.updateParent(
+      id,
+      parseRpcPayload<UpdateManagedUserDto>(updateManagedUserSchema, body),
+      actor,
+    );
+  }
+
+  @MessagePattern('admin.deleteParent')
+  async deleteParent(@Payload() payload: { id: string } & RpcActorPayload) {
+    const { actor, rest } = splitRpcActor(payload);
+    return this.adminService.deleteParent(rest.id, actor);
+  }
+
   @MessagePattern('admin.setParentPassword')
   async setParentPassword(@Payload() payload: { id: string; password: string } & RpcActorPayload) {
     const { actor, rest } = splitRpcActor(payload);
