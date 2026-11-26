@@ -5,6 +5,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Set from the shell before building, e.g. USER_GIT_COMMIT=$(git rev-parse --short HEAD)
+        GIT_COMMIT: ${USER_GIT_COMMIT:-unknown}
     container_name: user-service
     ports:
       - "127.0.0.1:4001:4001"

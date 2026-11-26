@@ -49,6 +49,12 @@ COPY --chown=node:node package.json ./
 # - FACEBOOK_APP_ID, FACEBOOK_APP_SECRET (app crashes on boot without them)
 # - GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_CALLBACK_URL, GOOGLE_OAUTH_REDIRECT_URL
 
+# Git commit this image was built from (passed as build arg by compose). Shown via
+# `docker inspect` label and `GIT_COMMIT` env. Kept last so it doesn't bust earlier layers.
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+LABEL org.opencontainers.image.revision=${GIT_COMMIT}
+
 USER node
 EXPOSE 4001
 CMD ["node", "dist/main"]
