@@ -326,15 +326,16 @@ describe('AuthService atomic reset and per-account lockout', () => {
       expect(await wrongPassword(service)).toBe(HttpStatus.TOO_MANY_REQUESTS);
     });
 
-    it('fails open when the counter cannot be read, instead of blocking every sign-in', async () => {
+    it('fails closed (503) when the counter cannot be read', async () => {
       const service = build();
       const real = rmq.send.getMockImplementation()!;
       rmq.send.mockImplementation((pattern: string, payload: Record<string, unknown>) =>
         pattern === 'redis.get' ? Promise.reject(new Error('timeout')) : real(pattern, payload),
       );
 
-      const out = await service.loginService({ email: EMAIL, password: 'correct-password' });
-      expect(out.accessToken).toBeTruthy();
+      await expect(
+        service.loginService({ email: EMAIL, password: 'correct-password' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE });
     });
 
     it('applies the same lockout to the userCode sign-in', async () => {

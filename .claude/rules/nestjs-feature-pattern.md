@@ -66,6 +66,7 @@ methods) is the closer shape for what you're building, and lean on the inline co
   goes through `StudentRepository.findParentForActor` — a TUTOR only reaches parents they created or
   whose children they manage (same rule as the `getParents` picker), else 404. Run these checks before
   any write. See `[[tutor-parent-edit-policy]]` memory.
+- **Multi-row writes go through one repository transaction**: when an update touches several rows (student + parent + link), do all checks and hashing in the service first, then call one repo method that wraps the writes in `$transaction`; run emails and session revokes after commit. See `StudentService.update` / `StudentRepository.applyStudentUpdate`.
 - **Role-gated self-update field restriction**: when a self-service update route
   (`@CurrentUser()`-scoped, e.g. `PUT /users`) must forbid one role from changing specific fields
   while an admin-by-id route (`PUT /users/:id`) stays unrestricted, don't add the check to the

@@ -2,12 +2,13 @@ import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
-import { IS_PUBLIC_KEY } from '@packages/decorators';
+import { ALLOW_WHILE_MUST_CHANGE_PASSWORD_KEY, IS_PUBLIC_KEY } from '@packages/decorators';
 import { JwtAuthGuard } from 'src/packages/guards/jwt-auth.guard';
 import { clearSessionCache } from 'src/packages/helpers/session-check.helper';
 import { ServiceUnavailableException } from '@nestjs/common';
+import { ERROR_MESSAGES } from 'src/data/constants';
 
-type Row = { id: string; isActive: boolean }[];
+type Row = { id: string; isActive: boolean; role?: string; mustChangePassword?: boolean }[];
 
 /** Minimal PrismaService: `user.findUnique()` resolves to the first of `rows` (or null). */
 function makeDb(rows: Row | Error) {
@@ -54,6 +55,8 @@ describe('JwtAuthGuard', () => {
     isPublic?: boolean;
     db?: Row | Error;
     session?: boolean | Error;
+    /** Route carries @AllowWhileMustChangePassword(). */
+    allowMustChange?: boolean;
   }) {
     const env = opts.env ?? { JWT_ACCESS_SECRET: SECRET };
     const config = {
@@ -61,10 +64,14 @@ describe('JwtAuthGuard', () => {
     } as unknown as ConfigService;
     const reflector = {
       getAllAndOverride: jest.fn((key: string) =>
-        key === IS_PUBLIC_KEY ? !!opts.isPublic : undefined,
+        key === IS_PUBLIC_KEY
+          ? !!opts.isPublic
+          : key === ALLOW_WHILE_MUST_CHANGE_PASSWORD_KEY
+            ? !!opts.allowMustChange
+            : undefined,
       ),
     } as unknown as Reflector;
-    const database = makeDb(opts.db ?? [{ id: USER_ID, isActive: true }]);
+    const database = makeDb(opts.db ?? [{ id: USER_ID, isActive: true, role: 'STUDENT' }]);
     const session = opts.session ?? true;
     const rmq = {
       send: jest.fn(() =>
@@ -215,16 +222,47 @@ describe('JwtAuthGuard', () => {
     });
 
     it.each(['STUDENT', 'ADMIN', 'TUTOR', 'PARENT'])('keeps the known role %s', async (role) => {
-      const { guard } = build({});
+      const { guard } = build({ db: [{ id: USER_ID, isActive: true, role }] });
       const { ctx, request } = makeContext(bearer(signToken({ ...validPayload, role })));
       await guard.canActivate(ctx);
       expect((request.user as { role: string }).role).toBe(role);
     });
   });
 
+  describe('temporary password (mustChangePassword)', () => {
+    it('refuses an ordinary route while the flag is set', async () => {
+      const { guard } = build({
+        db: [{ id: USER_ID, isActive: true, role: 'STUDENT', mustChangePassword: true }],
+      });
+      const { ctx } = makeContext(bearer(signToken(validPayload)));
+      await expect(guard.canActivate(ctx)).rejects.toMatchObject({
+        message: ERROR_MESSAGES.MUST_CHANGE_PASSWORD,
+        status: 403,
+      });
+    });
+
+    it('lets a route marked @AllowWhileMustChangePassword() through while the flag is set', async () => {
+      const { guard } = build({
+        allowMustChange: true,
+        db: [{ id: USER_ID, isActive: true, role: 'STUDENT', mustChangePassword: true }],
+      });
+      const { ctx, request } = makeContext(bearer(signToken(validPayload)));
+      await expect(guard.canActivate(ctx)).resolves.toBe(true);
+      expect((request.user as { id: string }).id).toBe(USER_ID);
+    });
+
+    it('does not restrict an account without the flag', async () => {
+      const { guard } = build({
+        db: [{ id: USER_ID, isActive: true, role: 'STUDENT', mustChangePassword: false }],
+      });
+      const { ctx } = makeContext(bearer(signToken(validPayload)));
+      await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    });
+  });
+
   describe('user existence and status', () => {
     it('attaches request.user and allows an active user', async () => {
-      const { guard, database } = build({ db: [{ id: USER_ID, isActive: true }] });
+      const { guard, database } = build({ db: [{ id: USER_ID, isActive: true, role: 'STUDENT' }] });
       const { ctx, request } = makeContext(bearer(signToken(validPayload)));
       await expect(guard.canActivate(ctx)).resolves.toBe(true);
       expect(request.user).toEqual({
@@ -237,8 +275,14 @@ describe('JwtAuthGuard', () => {
       expect(database.findUnique).toHaveBeenCalledTimes(1);
       expect(database.findUnique).toHaveBeenCalledWith({
         where: { id: USER_ID },
-        select: { id: true, isActive: true },
+        select: { id: true, isActive: true, role: true, mustChangePassword: true },
       });
+    });
+
+    it('rejects a token whose role no longer matches the database', async () => {
+      const { guard } = build({ db: [{ id: USER_ID, isActive: true, role: 'STUDENT' }] });
+      const { ctx } = makeContext(bearer(signToken({ ...validPayload, role: 'ADMIN' })));
+      await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
     });
 
     it('rejects when the user row no longer exists', async () => {
@@ -254,7 +298,9 @@ describe('JwtAuthGuard', () => {
     });
 
     it('still allows when isActive is null (only an explicit false blocks)', async () => {
-      const { guard } = build({ db: [{ id: USER_ID, isActive: null as unknown as boolean }] });
+      const { guard } = build({
+        db: [{ id: USER_ID, isActive: null as unknown as boolean, role: 'STUDENT' }],
+      });
       const { ctx } = makeContext(bearer(signToken(validPayload)));
       await expect(guard.canActivate(ctx)).resolves.toBe(true);
     });

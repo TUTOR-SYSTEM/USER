@@ -14,6 +14,14 @@ export type GoogleProfile = {
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
   constructor(configService: ConfigService) {
+    // No made-up credentials in production: a missing value must stop the boot, not ship a fake client.
+    if (
+      process.env.NODE_ENV === 'production' &&
+      (!configService.get<string>('GOOGLE_CLIENT_ID') ||
+        !configService.get<string>('GOOGLE_CLIENT_SECRET'))
+    ) {
+      throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in production');
+    }
     super({
       clientID: configService.get<string>('GOOGLE_CLIENT_ID') || 'dev-missing-google-client-id',
       clientSecret:

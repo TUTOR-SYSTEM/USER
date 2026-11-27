@@ -281,7 +281,9 @@ export class UserService {
       // The student belongs to the tutor who created it: without `tutorId` the tutor could not
       // read or manage the account afterwards.
       return this.createUserService(
-        { ...createUserDto, role: 'STUDENT', tutorId: actor.id },
+        // `parentId` is dropped: parents are attached through the student surface, which applies the
+        // tutor parent-sharing policy (`findParentForActor`).
+        { ...createUserDto, role: 'STUDENT', tutorId: actor.id, parentId: undefined },
         { sendCredentials: true },
       );
     }
@@ -430,6 +432,12 @@ export class UserService {
     expectedRole?: string;
   }) {
     this.assertAdmin(actor);
+    // An admin must not demote or deactivate their own account (the last-admin check cannot catch it).
+    if (
+      actor.id === id &&
+      (data.isActive === false || (data.role !== undefined && data.role !== 'ADMIN'))
+    )
+      throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
     return this.applyUserUpdate({ id, data, expectedRole });
   }
 
@@ -625,7 +633,9 @@ export class UserService {
         2_000,
         0,
       );
-      attempts = reply?.count ?? 0;
+      // An empty reply is unknown, not zero: fail closed rather than let the attempt through.
+      if (!reply) throw new Error('empty redis.incr reply');
+      attempts = reply.count ?? 0;
     } catch (error) {
       this.logger.warn('Current-password attempt counter unavailable', error);
       throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
@@ -733,19 +743,20 @@ export class UserService {
     const deactivates = data.isActive === false && user.isActive === true;
     // Revoke on every deactivation request, not only the first, so a retry after a failed revoke works.
     const revokesSessions = data.isActive === false;
+    const emailChanged = data.email !== undefined && data.email !== user.email;
     if (user.role === 'ADMIN' && ((demotes && data.role !== 'ADMIN') || deactivates)) {
       await this.assertNotLastActiveAdmin(user);
     }
 
     // A new email address has not been proven yet, so it must be verified again.
-    const emailChanged = data.email !== undefined && data.email !== user.email;
     const updated = await this.userRepo.update(id, {
       ...sanitizeUpdate(data),
       ...(emailChanged ? { emailVerified: false } : {}),
     });
 
     // A role change or deactivation must not leave the old access alive for up to the token TTL.
-    if (demotes || revokesSessions) await this.revokeAllSessions(id);
+    // A role/status change or a new email must not leave old sessions alive for up to the token TTL.
+    if (demotes || revokesSessions || emailChanged) await this.revokeAllSessions(id);
     return updated && omitPassword(updated);
   }
 }

@@ -1,4 +1,5 @@
-import { Controller } from '@nestjs/common';
+import { Controller, ForbiddenException } from '@nestjs/common';
+import { ERROR_MESSAGES } from 'src/data/constants';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import {
   createStudentSchema,
@@ -24,7 +25,12 @@ export class StudentRpcController {
   constructor(private readonly studentService: StudentService) {}
 
   @MessagePattern('student.generateCode')
-  async generateCode() {
+  async generateCode(@Payload() payload: RpcActorPayload) {
+    // Only a gateway-signed ADMIN/TUTOR may mint codes; an unsigned actor resolves to an empty role.
+    const { actor } = splitRpcActor(payload ?? {});
+    if (actor.role !== 'ADMIN' && actor.role !== 'TUTOR') {
+      throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
+    }
     return this.studentService.generateStudentCodeService();
   }
 

@@ -35,12 +35,19 @@ describe('ErrorInterceptor', () => {
     await expect(run(http)).resolves.toBe(http);
   });
 
-  it('wraps an unknown Error as InternalServerError with its message and stack', async () => {
+  it('wraps an unknown Error as InternalServerError with a generic message and keeps its stack', async () => {
     const err = new Error('something broke');
     const out = (await run(err)) as InternalServerErrorException;
     expect(out).toBeInstanceOf(InternalServerErrorException);
-    expect(out.message).toBe('something broke');
+    expect(out.message).toBe('Internal server error');
     expect(out.stack).toBe(err.stack);
+  });
+
+  it('never echoes internal detail of an unknown Error (config names, SQL, paths) to the client', async () => {
+    const err = new Error('JWT_ACCESS_SECRET missing at /app/src/x.ts:12');
+    const out = (await run(err)) as InternalServerErrorException;
+    expect(out.message).toBe('Internal server error');
+    expect(JSON.stringify(out.getResponse())).not.toContain('JWT_ACCESS_SECRET');
   });
 
   it('logs the original error before wrapping it', async () => {
@@ -88,9 +95,9 @@ describe('ErrorInterceptor', () => {
     expect(out.message).toBe('Database error');
   });
 
-  it('falls back to the raw message for an unmapped postgres code', async () => {
+  it('falls back to a generic message for an unmapped postgres code', async () => {
     const err = Object.assign(new Error('some other error'), { code: '99999' });
     const out = (await run(err)) as InternalServerErrorException;
-    expect(out.message).toBe('some other error');
+    expect(out.message).toBe('Internal server error');
   });
 });

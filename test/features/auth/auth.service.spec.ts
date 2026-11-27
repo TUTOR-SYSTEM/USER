@@ -49,6 +49,9 @@ function fakeRmq() {
         return { ok: true };
       case 'redis.get':
         return store.get(payload.key as string) ?? null;
+      case 'redis.del':
+        (payload.keys as string[]).forEach((k) => store.delete(k));
+        return { ok: true };
       case 'redis.getdel': {
         const value = store.get(payload.key as string) ?? null;
         store.delete(payload.key as string);
@@ -161,27 +164,27 @@ describe('AuthService', () => {
       ).rejects.toThrow('redis down');
     });
 
-    it('reports an unknown email as EMAIL_NOT_FOUND', async () => {
+    it('answers an unknown email with INVALID_CREDENTIALS', async () => {
       await expect(
         service.loginService({ email: 'x@y.test', password: 'whatever1' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.EMAIL_NOT_FOUND });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
     });
 
-    it('reports a wrong password as INVALID_PASSWORD', async () => {
+    it('answers a wrong password with the same INVALID_CREDENTIALS as an unknown email', async () => {
       userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
       await expect(
         service.loginService({ email: 'x@y.test', password: 'wrong' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_PASSWORD });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
     });
 
-    it('reports an OAuth-only account (no password) as ACCOUNT_NO_PASSWORD', async () => {
+    it('answers an OAuth-only account (no password) with INVALID_CREDENTIALS', async () => {
       userService.getUserByField.mockResolvedValue([user({ password: null })]);
       await expect(
         service.loginService({ email: 'x@y.test', password: 'whatever1' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.ACCOUNT_NO_PASSWORD });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
     });
 
-    it('reports an unknown user code as USER_CODE_NOT_FOUND', async () => {
+    it('answers an unknown user code with INVALID_CREDENTIALS', async () => {
       userService.getUserByField.mockResolvedValue([]);
       await expect(
         service.loginByUserCodeService({
@@ -189,7 +192,18 @@ describe('AuthService', () => {
           password: 'x',
           role: 'STUDENT',
         } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.USER_CODE_NOT_FOUND });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+    });
+
+    it('gives the same message and runs one bcrypt compare for unknown and wrong-password logins', async () => {
+      const unknown = await service
+        .loginService({ email: 'nobody@y.test', password: 'whatever1' })
+        .catch((e: Error) => e);
+      userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
+      const wrong = await service
+        .loginService({ email: 'x@y.test', password: 'wrong' })
+        .catch((e: Error) => e);
+      expect((unknown as Error).message).toBe((wrong as Error).message);
     });
 
     it('still signs in a legacy account whose password is shorter than the new minimum', async () => {
@@ -328,7 +342,7 @@ describe('AuthService', () => {
       await expect(service.logoutService({ userId: USER_ID, sid: sidA })).resolves.toEqual({
         message: 'Logged out',
       });
-      expect(rmq.emit).toHaveBeenCalledWith('redis.del', {
+      expect(rmq.send).toHaveBeenCalledWith('redis.del', {
         keys: [`session:${USER_ID}:${sidA}`, `refresh:${USER_ID}:${sidA}`],
       });
       expect(sessionKeys()).toHaveLength(1);
@@ -490,6 +504,15 @@ describe('AuthService', () => {
       });
 
     beforeEach(() => userService.getUserByField.mockResolvedValue([user()]));
+
+    it('answers an unknown address with INVALID_RESET_OTP after the same Redis read as a real one', async () => {
+      userService.getUserByField.mockResolvedValue([]);
+      rmq.send.mockClear();
+      await expect(reset('000000')).rejects.toMatchObject({
+        message: ERROR_MESSAGES.INVALID_RESET_OTP,
+      });
+      expect(rmq.send.mock.calls.map(([pattern]) => pattern)).toContain('redis.get');
+    });
 
     it('stops guessing after 10 tries in a window even when a fresh code is requested each time', async () => {
       for (let i = 0; i < 10; i++) {

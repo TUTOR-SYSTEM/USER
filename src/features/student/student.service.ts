@@ -193,6 +193,11 @@ export class StudentService {
     // Default password for the student: the one the tutor/admin set, otherwise a random (never returned) one.
     const studentPassword = dto.password ?? generateRandomPassword();
 
+    // Checked before the insert: a taken address gets the generic answer, not a raw unique-key error.
+    if (dto.email && (await this.repo.findUserByEmail({ email: dto.email }))) {
+      throw new BadRequestException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS);
+    }
+
     // 3. Prepare the new PARENT first (when parent info was submitted), so the student's username
     // can avoid the parent's. An existing PARENT is linked by `parentId` and left as-is.
     let parentId: string | null = null;
@@ -327,19 +332,13 @@ export class StudentService {
   }
 
   /**
-   * Student has no parent yet and the edit form carries parent details: link the tutor's existing
-   * PARENT with that email (sibling), or create a new PARENT and link it in one transaction.
+   * Student has no parent yet and the edit form carries parent details: a new PARENT row (not written
+   * yet, the caller writes it with the student in one transaction).
    */
-  private async linkOrCreateParent(
-    studentId: string,
-    student: { tutorId: string | null },
+  private async buildParentForStudent(
     dto: UpdateStudentDto,
-    actor: UserActor,
-  ) {
-    const sibling = await this.findLinkableParentByEmail(dto.parentEmail, student.tutorId, actor);
-    if (sibling) return this.repo.update({ id: studentId, data: { parentId: sibling.id } });
-
-    const parentCode = await this.generateUniqueCode();
+    tutorId: string | null,
+  ): Promise<{ parent: NewParentInput; password: string }> {
     const parentPassword = generateRandomPassword();
     const hashedParentPassword = await hashData(parentPassword);
     const { firstName, lastName } =
@@ -348,36 +347,24 @@ export class StudentService {
         : this.splitName(dto.parentName ?? '');
     const parentUsername = await this.generateUsernameFromName(firstName, lastName);
     // `users.email` is UNIQUE, so a parent without an email gets a unique placeholder (never '').
-    const parentUserId = randomUUID();
-    const parentEmail = dto.parentEmail || `${parentUsername}@no-email.local`;
-    const created = await this.repo.createParentAndLinkStudent({
-      studentId,
-      parent: {
-        id: parentUserId,
-        email: parentEmail,
-        password: hashedParentPassword,
-        mustChangePassword: true,
-        username: parentUsername,
-        firstName,
-        lastName,
-        userCode: parentCode,
-        phone: dto.parentPhone ?? null,
-        relationship: dto.parentRelationship ?? null,
-        gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
-        tutorId: student.tutorId,
-        address: dto.parentAddress || null,
-        district: dto.parentDistrict || null,
-        province: dto.parentProvince || null,
-      },
-    });
-    await sendAccountCreatedMail(this.rmqProducer, {
-      userId: parentUserId,
-      email: parentEmail,
+    const parent: NewParentInput = {
+      id: randomUUID(),
+      email: dto.parentEmail || `${parentUsername}@no-email.local`,
+      password: hashedParentPassword,
+      mustChangePassword: true,
       username: parentUsername,
-      displayName: firstName,
-      password: parentPassword,
-    });
-    return created;
+      firstName,
+      lastName,
+      userCode: await this.generateUniqueCode(),
+      phone: dto.parentPhone ?? null,
+      relationship: dto.parentRelationship ?? null,
+      gender: dto.parentRelationship === 'FATHER' ? 'MALE' : 'FEMALE',
+      tutorId,
+      address: dto.parentAddress || null,
+      district: dto.parentDistrict || null,
+      province: dto.parentProvince || null,
+    };
+    return { parent, password: parentPassword };
   }
 
   /** PARENT accounts the caller can attach to a student (picker): ADMIN all, TUTOR their own. */
@@ -552,7 +539,7 @@ export class StudentService {
     if (actor.role === 'TUTOR' && editsExistingParent) {
       throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
     }
-    // Checked before any write, so a rejected request leaves nothing half-updated.
+    // Every check and every hash runs first; the DB is written once, at the end, in one transaction.
     let relinkParentId: string | undefined;
     if (dto.parentId !== undefined) {
       const existingParent = await this.repo.findParentForActor({
@@ -602,47 +589,75 @@ export class StudentService {
     if (dto.province !== undefined) studentUpdate.province = dto.province || null;
     if (dto.avatar !== undefined) studentUpdate.avatar = dto.avatar;
 
-    let updated: Omit<typeof student, 'parent' | 'tutor'> = student;
-    if (Object.keys(studentUpdate).length > 0) {
-      updated = (await this.repo.update({ id, data: studentUpdate })) ?? student;
-    }
-
-    // ── parent fields ──
-    if (relinkParentId !== undefined) {
-      // Re-link to an existing PARENT. Only the link changes: the parent's own record is left as-is,
-      // since it may be shared with the student's siblings.
-      updated = (await this.repo.update({ id, data: { parentId: relinkParentId } })) ?? student;
-    } else if (hasParentField) {
+    // ── parent fields (prepared, not written) ──
+    let parentUpdate: { id: string; data: Prisma.UserUncheckedUpdateManyInput } | undefined;
+    let linkParentId: string | undefined = relinkParentId;
+    let newParent: { parent: NewParentInput; password: string } | undefined;
+    if (relinkParentId === undefined && hasParentField) {
       if (student.parentId) {
-        const parentUpdate: Prisma.UserUncheckedUpdateManyInput = {};
+        const data: Prisma.UserUncheckedUpdateManyInput = {};
         if (dto.parentFirstName !== undefined || dto.parentLastName !== undefined) {
-          if (dto.parentFirstName !== undefined) parentUpdate.firstName = dto.parentFirstName;
-          if (dto.parentLastName !== undefined) parentUpdate.lastName = dto.parentLastName;
+          if (dto.parentFirstName !== undefined) data.firstName = dto.parentFirstName;
+          if (dto.parentLastName !== undefined) data.lastName = dto.parentLastName;
         } else if (dto.parentName !== undefined) {
           const { firstName, lastName } = this.splitName(dto.parentName);
-          parentUpdate.firstName = firstName;
-          parentUpdate.lastName = lastName;
+          data.firstName = firstName;
+          data.lastName = lastName;
         }
-        if (dto.parentPhone !== undefined) parentUpdate.phone = dto.parentPhone || null;
+        if (dto.parentPhone !== undefined) data.phone = dto.parentPhone || null;
         if (dto.parentEmail !== undefined) {
-          parentUpdate.email = dto.parentEmail;
+          data.email = dto.parentEmail;
           // The new address is unproven: it must be verified again.
-          if (parentEmailChanged) parentUpdate.emailVerified = false;
+          if (parentEmailChanged) data.emailVerified = false;
         }
-        if (dto.parentRelationship !== undefined)
-          parentUpdate.relationship = dto.parentRelationship;
-        if (dto.parentAddress !== undefined) parentUpdate.address = dto.parentAddress || null;
-        if (dto.parentDistrict !== undefined) parentUpdate.district = dto.parentDistrict || null;
-        if (dto.parentProvince !== undefined) parentUpdate.province = dto.parentProvince || null;
-        if (Object.keys(parentUpdate).length > 0) {
-          await this.repo.updateParent({ id: student.parentId, data: parentUpdate });
-          // An email change must not leave the parent's old sessions alive.
-          if (parentEmailChanged) await revokeAllUserSessions(this.rmqProducer, student.parentId);
-        }
+        if (dto.parentRelationship !== undefined) data.relationship = dto.parentRelationship;
+        if (dto.parentAddress !== undefined) data.address = dto.parentAddress || null;
+        if (dto.parentDistrict !== undefined) data.district = dto.parentDistrict || null;
+        if (dto.parentProvince !== undefined) data.province = dto.parentProvince || null;
+        if (Object.keys(data).length > 0) parentUpdate = { id: student.parentId, data };
       } else if (dto.parentName || dto.parentFirstName || dto.parentLastName) {
         // No parent linked yet: reuse the tutor's parent with this email (a sibling), else create one.
-        updated = (await this.linkOrCreateParent(id, student, dto, actor)) ?? student;
+        const sibling = await this.findLinkableParentByEmail(
+          dto.parentEmail,
+          student.tutorId,
+          actor,
+        );
+        if (sibling) {
+          linkParentId = sibling.id;
+        } else {
+          newParent = await this.buildParentForStudent(dto, student.tutorId);
+          linkParentId = newParent.parent.id;
+        }
       }
+    }
+
+    // ── one write: student row, parent row and link together ──
+    let updated: Omit<typeof student, 'parent' | 'tutor'> = student;
+    const hasStudentWrite = Object.keys(studentUpdate).length > 0;
+    if (hasStudentWrite || linkParentId !== undefined || parentUpdate || newParent) {
+      updated =
+        (await this.repo.applyStudentUpdate({
+          studentId: id,
+          studentData: studentUpdate,
+          parentId: linkParentId,
+          parentUpdate,
+          newParent: newParent?.parent,
+        })) ?? student;
+    }
+
+    // Side effects only after the commit.
+    if (newParent) {
+      await sendAccountCreatedMail(this.rmqProducer, {
+        userId: newParent.parent.id,
+        email: newParent.parent.email,
+        username: newParent.parent.username,
+        displayName: newParent.parent.firstName,
+        password: newParent.password,
+      });
+    }
+    // An email change must not leave the parent's old sessions alive.
+    if (parentEmailChanged && student.parentId) {
+      await revokeAllUserSessions(this.rmqProducer, student.parentId);
     }
 
     return omitPassword(updated);

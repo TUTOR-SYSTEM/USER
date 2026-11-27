@@ -57,11 +57,11 @@ describe('user schemas', () => {
       expect(valid('Abcdef1!').success).toBe(true);
     });
 
-    it('accepts both length boundaries (8 and 100) and rejects 7 and 101', () => {
+    it('accepts both length boundaries (8 and 72 bytes) and rejects 7 and 73', () => {
       expect(valid('Abcdef1!').success).toBe(true);
-      expect(valid(`Abcdef1!${'x'.repeat(92)}`).success).toBe(true);
+      expect(valid(`Abcdef1!${'x'.repeat(64)}`).success).toBe(true);
       expect(valid('Abcde1!').success).toBe(false);
-      expect(valid(`Abcdef1!${'x'.repeat(93)}`).success).toBe(false);
+      expect(valid(`Abcdef1!${'x'.repeat(65)}`).success).toBe(false);
     });
 
     it.each([

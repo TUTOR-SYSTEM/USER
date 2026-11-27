@@ -45,7 +45,10 @@ describe('UserService email verification', () => {
       update: jest.fn(async (_id: string, data: Record<string, unknown>) => row(data)),
       findWithPassword: jest.fn(),
     };
-    rmq = { emit: jest.fn().mockResolvedValue(undefined), send: jest.fn() };
+    rmq = {
+      emit: jest.fn().mockResolvedValue(undefined),
+      send: jest.fn().mockResolvedValue({ count: 0 }),
+    };
     service = new UserService(repo as unknown as UserRepository, rmq as unknown as RmqProducer);
   });
 

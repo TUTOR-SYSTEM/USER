@@ -68,7 +68,7 @@
   wrong answers per account (5 per 15 min, `current-password-attempts:{userId}`, fails closed on Redis errors)
   and is used by `changePasswordService` and by self-update when the caller changes their OWN email (payload
   field `currentPassword`, never written to the row). Admin changing someone else's email is not asked, but
-  `AdminService.updateManagedUser` still resets `emailVerified` and revokes sessions on an email change.
+  `AdminService.updateManagedUser` still resets `emailVerified` and revokes sessions on an email change. The self-update path (`UserService.applyUserUpdate`) does the same: a changed email revokes all sessions, as do a role change or deactivation.
 - **bcrypt cost** is 12 (`BCRYPT_ROUNDS`, clamped 10..15); `compareData` returns false on an unreadable hash
   (counts as a failed sign-in) and `hashData` never echoes its cause. Logs redact passwords, signatures and
   contact details (phone/address/dob) in both interceptors. Swagger `/api-docs` is off when
@@ -101,4 +101,15 @@
 - **Revocation markers beat in-flight refreshes**: every revoke writes `revoked-all:{uid}` or
   `revoked-session:{uid}:{sid}` (ms timestamp) before it deletes keys. `refreshTokens` writes the new
   session, then reads the markers. A marker at or after the refresh's start time undoes the write and
-  rejects. Any new revoke path must write its marker before its deletes.
+  rejects. Any new revoke path must write its marker before its deletes. The deletes go through awaited `rmqProducer.send('redis.del', …)`, never `emit`: `emit` resolves on publish, so a logout could report success while the session key survives.
+- **Lockout counters fail closed**: `assertLoginNotLocked` and `recordLoginFailure` throw 503 (`SESSION_CHECK_UNAVAILABLE`) when Redis is unreadable, so a right and a wrong password answer the same during an outage.
+- **Guard checks role against the DB**: `JwtAuthGuard` selects `role` with `isActive` and rejects a token whose role differs from the row, so a demotion bites at once even if revoke failed.
+- **Facebook email is not proof**: `findOrCreateOAuthUser(profile, { emailProven: false })` refuses to link an existing account and creates new ones with `emailVerified=false`. Only Google (which sends `email_verified`) may link by email.
+- **New passwords are capped at 72 bytes** (bcrypt reads no more); the login schema keeps 100 chars so old accounts can still sign in. In production the boot fails when `RPC_ACTOR_SECRET` is under 32 chars or Google OAuth credentials are missing.
+- **TUTOR `user.createUser` drops `parentId`**: parents are attached through the student surface, which applies the `findParentForActor` sharing policy.
+- **Log redaction covers identity fields** (`email`, names, `userCode`, provider ids) in both interceptors.
+- **`mustChangePassword` is enforced server-side**: `JwtAuthGuard` refuses every HTTP route for such an account unless the handler has `@AllowWhileMustChangePassword()` (only `changePassword`); `RpcMustChangePasswordInterceptor` does the same for acting RPCs except `user.changePassword` and `auth.logout`. New self-service routes a flagged user needs must carry the decorator.
+- **Unknown errors reach clients as `Internal server error`** (`ErrorInterceptor`): known DB codes and ORM text keep their mapped messages, the real message is only logged.
+- **Sign-in failures are uniform**: unknown account, OAuth-only account and wrong password all return `INVALID_CREDENTIALS` with one bcrypt compare; keep it that way for new login paths.
+- **Actor signature is bound to pattern and payload**: gateway adds `actorBind` (HMAC over `pattern`, `hashRpcPayload(payload)`, `actorSig`, `actorSigTs`) in `withActorSignature(message, pattern)`; `RpcActorBindingInterceptor` (first in `main.ts`, before the replay guard) answers 403 when it is missing or does not match. The payload hash skips the signature fields, uses sorted keys and ignores `undefined`. Keep `rpc-actor-signature.helper.ts` identical in both repos, and deploy both together. New acting RPCs need nothing extra: the producer binds every signed actor.
+- **`student.generateCode` needs a signed ADMIN/TUTOR actor** like the other acting RPCs; gateway forwards `actorId`/`actorRole`.

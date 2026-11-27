@@ -20,9 +20,18 @@ export interface RpcActorPayload {
   actorSid?: string;
   actorSig?: string;
   actorSigTs?: number;
+  /** Binds the signature to the RPC pattern and payload (checked by `RpcActorBindingInterceptor`). */
+  actorBind?: string;
 }
 
-const ACTOR_FIELDS = ['actorId', 'actorRole', 'actorSid', 'actorSig', 'actorSigTs'] as const;
+const ACTOR_FIELDS = [
+  'actorId',
+  'actorRole',
+  'actorSid',
+  'actorSig',
+  'actorSigTs',
+  'actorBind',
+] as const;
 
 /**
  * Splits the caller identity off an RPC payload so it never reaches the data written to the DB.

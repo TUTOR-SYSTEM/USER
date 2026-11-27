@@ -201,8 +201,7 @@ export class AuthService {
   /**
    * Per-account lockout (M-USER-3): a password guessed through many IPs still hits one counter.
    * Runs before the account lookup, so a locked identifier gets the same answer whether or not an
-   * account exists. Fails open when Redis cannot be read: a login cannot finish without Redis
-   * anyway, since the session is stored there.
+   * account exists. Fails closed (503) when Redis cannot be read.
    */
   private async assertLoginNotLocked(identifier: string): Promise<void> {
     // Two counters: (IP, account) with the normal limit, and the account alone with a higher one.
@@ -224,8 +223,10 @@ export class AuthService {
           REDIS_READ_RETRIES,
         );
       } catch (error) {
+        // Fail closed: without the counter there is no attempt limit, and a right password would
+        // answer differently from a wrong one (the session write needs Redis too).
         this.logger.warn('Login lockout check unavailable', error);
-        return;
+        throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
       }
       if (Number(failures ?? 0) >= max) {
         const remainingSeconds = await this.getLoginLockRemainingSeconds(key);
@@ -277,6 +278,7 @@ export class AuthService {
       }
     } catch (error) {
       this.logger.warn('Failed to record a failed sign-in', error);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
     }
   }
 
@@ -292,11 +294,10 @@ export class AuthService {
     identifier: string,
     user: User | undefined,
     password: string,
-    notFoundCode?: string,
   ): Promise<User> {
     let verified: User;
     try {
-      verified = await this.verifyCredentials(user, password, notFoundCode);
+      verified = await this.verifyCredentials(user, password);
     } catch (error) {
       if (error instanceof UnauthorizedException) {
         await this.recordLoginFailure(identifier);
@@ -308,22 +309,16 @@ export class AuthService {
   }
 
   /**
-   * Each failure has its own code so the client can tell the user what to fix. An unknown
-   * account still runs a bcrypt compare against a dummy hash, so the response time does not
-   * reveal whether the account exists.
+   * Every failure gets the same answer (INVALID_CREDENTIALS), whether the account is unknown, has no
+   * password (OAuth-only) or the password is wrong, so the response does not reveal which emails or
+   * user codes exist. Each branch still runs one bcrypt compare (a dummy hash when there is no
+   * password to check), so the response time does not reveal it either.
    */
-  private async verifyCredentials(
-    user: User | undefined,
-    password: string,
-    notFoundCode: string = ERROR_MESSAGES.EMAIL_NOT_FOUND,
-  ): Promise<User> {
-    if (!user) {
-      await compareData(password, await (this.dummyHash ??= hashData('dummy-password')));
-      throw new UnauthorizedException(notFoundCode);
-    }
-    if (!user.password) throw new UnauthorizedException(ERROR_MESSAGES.ACCOUNT_NO_PASSWORD);
-    if (!(await compareData(password, user.password))) {
-      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_PASSWORD);
+  private async verifyCredentials(user: User | undefined, password: string): Promise<User> {
+    const hash = user?.password ?? (await (this.dummyHash ??= hashData('dummy-password')));
+    const matches = await compareData(password, hash);
+    if (!user || !user.password || !matches) {
+      throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
     }
     return user;
   }
@@ -384,7 +379,7 @@ export class AuthService {
       value: String(Date.now()),
       ttlSeconds: SESSION_REVOKED_MARKER_TTL_SECONDS,
     });
-    await this.rmqProducer.emit('redis.del', {
+    await this.rmqProducer.send('redis.del', {
       keys: [sessionRedisKey(userId, sid), refreshHashRedisKey(userId, sid)],
     });
   }
@@ -426,15 +421,19 @@ export class AuthService {
    * stored password is replaced with a random one (the squatter's credentials stop working and
    * their live sessions are revoked) before the account is handed over.
    */
-  private async findOrCreateOAuthUser(profile: {
-    email: string;
-    firstName: string;
-    lastName: string;
-  }): Promise<User> {
+  private async findOrCreateOAuthUser(
+    profile: {
+      email: string;
+      firstName: string;
+      lastName: string;
+    },
+    { emailProven = true }: { emailProven?: boolean } = {},
+  ): Promise<User> {
     const email = normalizeEmail(profile.email);
     const [existing] = await this.userService.getUserByField({ field: 'email', value: email });
     if (existing) {
-      if (existing.role !== 'STUDENT') {
+      // A provider that does not prove the email must never hand over an existing account.
+      if (existing.role !== 'STUDENT' || !emailProven) {
         throw new UnauthorizedException(ERROR_MESSAGES.INVALID_CREDENTIALS);
       }
       if (existing.emailVerified) return existing;
@@ -455,7 +454,7 @@ export class AuthService {
         lastName: profile.lastName,
         role: 'STUDENT',
       },
-      { emailVerified: true },
+      { emailVerified: emailProven },
     );
     const [created] = await this.userService.getUserByField({ field: 'email', value: email });
     if (!created) throw new BadRequestException(ERROR_MESSAGES.FAILED_TO_CREATE_USER);
@@ -541,19 +540,17 @@ export class AuthService {
     });
 
     const found = rows.find((u) => u.role === dto.role);
-    const user = await this.verifyCredentialsWithLockout(
-      identifier,
-      found,
-      dto.password,
-      ERROR_MESSAGES.USER_CODE_NOT_FOUND,
-    );
+    const user = await this.verifyCredentialsWithLockout(identifier, found, dto.password);
 
     return this.issueLoginResponse(user);
   }
 
   // TODO: login with google account ...
   async facebookLoginService(profile: FacebookProfile): Promise<LoginResponseDto> {
-    return this.issueLoginResponse(await this.findOrCreateOAuthUser(profile));
+    // Facebook does not say whether the email is verified, so it is not trusted to link accounts.
+    return this.issueLoginResponse(
+      await this.findOrCreateOAuthUser(profile, { emailProven: false }),
+    );
   }
 
   async googleLoginService(profile: GoogleProfile): Promise<LoginResponseDto> {
@@ -640,6 +637,8 @@ export class AuthService {
     // Unknown email, deactivated account and wrong code give the same answer, so the endpoint does
     // not reveal accounts, and a deactivated account cannot reset its way back in.
     if (!user || user.isActive === false) {
+      // Same Redis round-trip as a real account, so the response time does not reveal the account.
+      await this.redisGet(resetPasswordOtpRedisKey(randomUUID()));
       throw new BadRequestException(ERROR_MESSAGES.INVALID_RESET_OTP);
     }
 
