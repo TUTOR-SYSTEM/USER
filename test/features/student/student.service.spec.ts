@@ -64,6 +64,7 @@ describe('StudentService', () => {
     findClassesByStudentIds: jest.Mock;
     delete: jest.Mock;
     usernameExists: jest.Mock;
+    applyStudentUpdate: jest.Mock;
   };
 
   const build = async (usernameRows: DbRows[] = []) => {
@@ -72,6 +73,34 @@ describe('StudentService', () => {
     mockedRandomPassword.mockReturnValueOnce('Student@123456').mockReturnValueOnce('Parent@123456');
     repo = {
       getStudentByField: jest.fn().mockResolvedValue(undefined),
+      // Emulates the single transaction on top of the per-step mocks, so the assertions below still
+      // see the same writes (parent row, new parent link, student row) they did before.
+      applyStudentUpdate: jest.fn(
+        async (args: {
+          studentId: string;
+          studentData: Record<string, unknown>;
+          parentId?: string;
+          parentUpdate?: { id: string; data: Record<string, unknown> };
+          newParent?: Record<string, unknown>;
+        }) => {
+          if (args.parentUpdate) {
+            await repo.updateParent({ id: args.parentUpdate.id, data: args.parentUpdate.data });
+          }
+          if (args.newParent) {
+            await repo.createParentAndLinkStudent({
+              studentId: args.studentId,
+              parent: args.newParent,
+            });
+          }
+          const linkTo = args.newParent ? undefined : args.parentId;
+          const data = {
+            ...args.studentData,
+            ...(linkTo !== undefined ? { parentId: linkTo } : {}),
+          };
+          if (Object.keys(data).length === 0) return repo.findById({ id: args.studentId });
+          return repo.update({ id: args.studentId, data });
+        },
+      ),
       createParent: jest.fn().mockImplementation(async (d) => ({ ...d, id: d.id })),
       createStudent: jest.fn().mockImplementation(async (d) => ({ ...d })),
       createStudentWithNewParent: jest.fn().mockImplementation(async (_p, s) => ({ ...s })),
@@ -1277,6 +1306,80 @@ describe('StudentService', () => {
         ).rejects.toThrow();
         expect(repo.getParents).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('atomic student edit and duplicate email', () => {
+    it('writes the student fields, the new parent and the link in one applyStudentUpdate call', async () => {
+      mockedGenerateCode.mockReturnValueOnce('PARNEW');
+      repo.findById.mockResolvedValue({
+        id: STUDENT_ID,
+        parentId: null,
+        tutorId: TUTOR.id,
+        parent: null,
+        tutor: null,
+      });
+      await service.update(
+        STUDENT_ID,
+        { studentName: 'Le Van C', parentName: 'Vu Thi E', parentRelationship: 'MOTHER' } as never,
+        ADMIN_ACTOR,
+      );
+      expect(repo.applyStudentUpdate).toHaveBeenCalledTimes(1);
+      expect(repo.applyStudentUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          studentId: STUDENT_ID,
+          studentData: expect.objectContaining({ firstName: 'Van C', lastName: 'Le' }),
+          newParent: expect.objectContaining({ firstName: 'Thi E', relationship: 'MOTHER' }),
+        }),
+      );
+    });
+
+    it('writes nothing when a later check fails (a bad parent id is refused before any write)', async () => {
+      repo.findById.mockResolvedValue({
+        id: STUDENT_ID,
+        parentId: null,
+        tutorId: TUTOR.id,
+        parent: null,
+        tutor: null,
+      });
+      repo.findParentForActor.mockResolvedValue(null);
+      await expect(
+        service.update(
+          STUDENT_ID,
+          { studentName: 'Le Van C', parentId: PARENT_ID } as never,
+          ADMIN_ACTOR,
+        ),
+      ).rejects.toThrow(NotFoundException);
+      expect(repo.applyStudentUpdate).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a failed transaction and does not revoke sessions for a write that never landed', async () => {
+      repo.findById.mockResolvedValue({
+        id: STUDENT_ID,
+        parentId: PARENT_ID,
+        tutorId: TUTOR.id,
+        parent: { id: PARENT_ID, email: 'old@example.com' },
+        tutor: null,
+      });
+      repo.applyStudentUpdate.mockRejectedValueOnce(new Error('db down'));
+      await expect(
+        service.update(STUDENT_ID, { parentEmail: 'new@example.com' } as never, ADMIN_ACTOR),
+      ).rejects.toThrow('db down');
+      expect(rmq.send).not.toHaveBeenCalledWith('redis.delByPrefix', expect.anything());
+    });
+
+    it('refuses a student email that is already taken, before the insert', async () => {
+      repo.findTutorById.mockResolvedValueOnce({ id: TUTOR.id });
+      repo.findUserByEmail.mockResolvedValueOnce({ id: 'other', role: 'STUDENT', tutorId: null });
+      await expect(
+        service.create(
+          { studentName: 'Le Van A', tutorId: TUTOR.id, email: 'taken@example.com' } as never,
+          ADMIN_ACTOR,
+        ),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS });
+      expect(repo.createStudent).not.toHaveBeenCalled();
+      expect(repo.createStudentWithNewParent).not.toHaveBeenCalled();
     });
   });
 });

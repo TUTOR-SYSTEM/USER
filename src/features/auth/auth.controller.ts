@@ -344,6 +344,7 @@ export class AuthController {
     const { accessToken, refreshToken } = await this.authService.facebookLoginService(req.user);
 
     const redirectBase =
+      this.configService.get<string>('FACEBOOK_OAUTH_REDIRECT_URL') ??
       this.configService.get<string>('GOOGLE_OAUTH_REDIRECT_URL') ??
       'http://localhost:3000/oauth/callback';
     // The refresh token never travels in the URL: it is set as an httpOnly cookie on this response.

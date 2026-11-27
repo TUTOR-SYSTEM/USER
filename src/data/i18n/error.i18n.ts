@@ -44,6 +44,10 @@ export const ERROR_TRANSLATIONS = {
     en: 'Invalid credentials',
   },
   INVALID_PASSWORD: { vi: 'Mật khẩu không đúng', en: 'Invalid password' },
+  MUST_CHANGE_PASSWORD: {
+    vi: 'Bạn phải đổi mật khẩu tạm thời trước khi tiếp tục',
+    en: 'You must change your temporary password first',
+  },
   // Generic duplicate answer for register/create: never says which field (or email) already exists.
   ACCOUNT_ALREADY_EXISTS: {
     vi: 'Không thể tạo tài khoản với thông tin này',
@@ -364,7 +368,10 @@ export const ERROR_TRANSLATIONS = {
 
   // Student
   STUDENT_CODE_EXISTS: { vi: 'Mã học sinh đã tồn tại', en: 'Student code already exists' },
-  STUDENT_TUTOR_REQUIRED: { vi: 'Vui lòng chọn gia sư quản lý', en: 'Please select a managing tutor' },
+  STUDENT_TUTOR_REQUIRED: {
+    vi: 'Vui lòng chọn gia sư quản lý',
+    en: 'Please select a managing tutor',
+  },
 
   // Generic
   VALIDATION_FAILED: { vi: 'Dữ liệu không hợp lệ', en: 'Validation failed' },

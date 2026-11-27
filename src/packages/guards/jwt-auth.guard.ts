@@ -1,8 +1,15 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
-import { IS_PUBLIC_KEY } from '@packages/decorators';
+import { ALLOW_WHILE_MUST_CHANGE_PASSWORD_KEY, IS_PUBLIC_KEY } from '@packages/decorators';
+import { ERROR_MESSAGES } from 'src/data/constants';
 import { PrismaService } from '../../database/database.module';
 import type { Request } from 'express';
 
@@ -100,6 +107,7 @@ export class JwtAuthGuard implements CanActivate {
     try {
       decoded = this.jwtService.verify(token, {
         secret: accessSecret,
+        algorithms: ['HS256'],
       });
     } catch {
       throw new UnauthorizedException('Unauthorized ...');
@@ -117,11 +125,23 @@ export class JwtAuthGuard implements CanActivate {
 
     const user = await this.db.user.findUnique({
       where: { id: payload.id },
-      select: { id: true, isActive: true },
+      select: { id: true, isActive: true, role: true, mustChangePassword: true },
     });
 
-    if (!user || user.isActive === false) {
+    // The role in the token must still be the role in the DB (a demotion must bite at once).
+    if (!user || user.isActive === false || user.role !== payload.role) {
       throw new UnauthorizedException('Unauthorized ...');
+    }
+
+    // A temporary password only opens the routes that replace it (changePassword); everything else waits.
+    if (user.mustChangePassword === true) {
+      const allowed = this.reflector.getAllAndOverride<boolean>(
+        ALLOW_WHILE_MUST_CHANGE_PASSWORD_KEY,
+        [context.getHandler(), context.getClass()],
+      );
+      if (allowed !== true) {
+        throw new ForbiddenException(ERROR_MESSAGES.MUST_CHANGE_PASSWORD);
+      }
     }
 
     return true;

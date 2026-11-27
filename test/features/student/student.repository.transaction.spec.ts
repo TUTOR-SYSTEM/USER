@@ -33,4 +33,33 @@ describe('StudentRepository transactions', () => {
     );
     expect(result).toEqual({ id: 's1', parentId: 'p1' });
   });
+
+  it('applies a student edit with a new parent in one transaction, parent created before the link', async () => {
+    const { db, repo } = build();
+    await repo.applyStudentUpdate({
+      studentId: 's1',
+      studentData: { firstName: 'X' },
+      newParent: parent,
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    const ops = db.$transaction.mock.calls[0][0] as { args: { data: Record<string, unknown> } }[];
+    expect(ops).toHaveLength(2);
+    expect(ops[0].args.data).toMatchObject({ id: 'p1', role: 'PARENT' });
+    expect(ops[1].args.data).toMatchObject({ firstName: 'X', parentId: 'p1' });
+  });
+
+  it('writes the parent update and the student row in the same transaction, without a new parent', async () => {
+    const { db, repo } = build();
+    await repo.applyStudentUpdate({
+      studentId: 's1',
+      studentData: {},
+      parentId: 'p2',
+      parentUpdate: { id: 'p1', data: { phone: '0999' } },
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    const ops = db.$transaction.mock.calls[0][0] as { args: { data: Record<string, unknown> } }[];
+    expect(ops).toHaveLength(2);
+    expect(ops[0].args.data).toMatchObject({ phone: '0999' });
+    expect(ops[1].args.data).toMatchObject({ parentId: 'p2' });
+  });
 });

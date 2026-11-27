@@ -15,7 +15,10 @@ import { TraceContextInterceptor } from '@packages/interceptor';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { setLogSink } from '@packages/context/log-sink';
 import { RmqProducer } from './features/rabbitmq/rmq.producer';
+import { RpcActorBindingInterceptor } from './features/rabbitmq/rpc-actor-binding.interceptor';
 import { RpcActorReplayInterceptor } from './features/rabbitmq/rpc-actor-replay.interceptor';
+import { RpcMustChangePasswordInterceptor } from './features/rabbitmq/rpc-must-change-password.interceptor';
+import { PrismaService } from './database/database.module';
 
 async function bootstrap() {
   // Without this secret every RPC actor is unverifiable and every user-acting call is refused.
@@ -23,8 +26,12 @@ async function bootstrap() {
     throw new Error('RPC_ACTOR_SECRET must be set (shared with gateway)');
   }
   if (process.env.RPC_ACTOR_SECRET.trim().length < 32) {
-    // Not fatal (it would stop a deploy whose secret is already shared with gateway), but a short
-    // secret makes the HMAC guessable: rotate it in both services.
+    // A short secret makes the HMAC guessable: refuse to boot in production, warn elsewhere.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'RPC_ACTOR_SECRET must be at least 32 characters (rotate it in both services)',
+      );
+    }
     Logger.warn(
       'RPC_ACTOR_SECRET is shorter than 32 characters: use a long random value',
       'Bootstrap',
@@ -67,7 +74,10 @@ async function bootstrap() {
   // The replay guard runs after the trace context is open, so its rejections are traced too (#5).
   rmqMicroservice.useGlobalInterceptors(
     new TraceContextInterceptor(),
+    // Binding first: a tampered envelope is refused before it can burn the genuine signature.
+    new RpcActorBindingInterceptor(),
     new RpcActorReplayInterceptor(rmqProducer),
+    new RpcMustChangePasswordInterceptor(app.get(PrismaService)),
   );
   await app.startAllMicroservices();
   Logger.log(

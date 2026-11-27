@@ -73,8 +73,8 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
     jest.restoreAllMocks();
   });
 
-  // AC1: unknown email -> 401 with its own message
-  it('AC1: unknown email rejects with UnauthorizedException (401) and EMAIL_NOT_FOUND', async () => {
+  // AC1: unknown email -> 401 with the generic credentials message (no account enumeration)
+  it('AC1: unknown email rejects with UnauthorizedException (401) and INVALID_CREDENTIALS', async () => {
     userService.getUserByField.mockResolvedValue([]);
 
     const error = await captureError(
@@ -83,13 +83,13 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
-    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.EMAIL_NOT_FOUND);
+    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_CREDENTIALS);
     // Only the lockout counter may be touched on a failed sign-in: no session is written.
     expect(rmq.send.mock.calls.map(([pattern]) => pattern)).not.toContain('redis.set');
   });
 
-  // AC2: wrong password -> 401 with its own message (distinct from an unknown email)
-  it('AC2: wrong password rejects with UnauthorizedException (401) and INVALID_PASSWORD', async () => {
+  // AC2: wrong password -> 401 with the same message as an unknown email
+  it('AC2: wrong password rejects with UnauthorizedException (401) and INVALID_CREDENTIALS', async () => {
     userService.getUserByField.mockResolvedValue([buildUser({ password: correctPasswordHash })]);
 
     const error = await captureError(
@@ -98,7 +98,7 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
-    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_PASSWORD);
+    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_CREDENTIALS);
     // Only the lockout counter may be touched on a failed sign-in: no session is written.
     expect(rmq.send.mock.calls.map(([pattern]) => pattern)).not.toContain('redis.set');
   });

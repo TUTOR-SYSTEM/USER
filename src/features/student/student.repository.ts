@@ -157,6 +157,51 @@ export class StudentRepository {
     return this.db.user.findUnique({ where: { id: studentId } });
   }
 
+  /**
+   * One transaction for a student edit: the optional parent row update, the optional new PARENT and
+   * the student row (with its `parentId` link). Either all of it commits or none of it does.
+   */
+  async applyStudentUpdate({
+    studentId,
+    studentData,
+    parentId,
+    parentUpdate,
+    newParent,
+  }: {
+    studentId: string;
+    studentData: Prisma.UserUncheckedUpdateManyInput;
+    /** Existing PARENT to link the student to (sibling or re-link). */
+    parentId?: string;
+    parentUpdate?: { id: string; data: Prisma.UserUncheckedUpdateManyInput };
+    /** New PARENT created in the same transaction and linked to the student. */
+    newParent?: NewParentInput;
+  }) {
+    const linkTo = newParent?.id ?? parentId;
+    const studentPatch: Prisma.UserUncheckedUpdateManyInput = {
+      ...studentData,
+      ...(linkTo !== undefined ? { parentId: linkTo } : {}),
+      updatedAt: new Date(),
+    };
+    // The parent is created before the student points at it (FK order).
+    const ops: Prisma.PrismaPromise<unknown>[] = [];
+    if (newParent) {
+      ops.push(this.db.user.create({ data: { ...newParent, role: 'PARENT' } }));
+    }
+    if (parentUpdate) {
+      ops.push(
+        this.db.user.updateMany({
+          where: { id: parentUpdate.id, role: 'PARENT' },
+          data: { ...parentUpdate.data, updatedAt: new Date() },
+        }),
+      );
+    }
+    ops.push(
+      this.db.user.updateMany({ where: { id: studentId, role: 'STUDENT' }, data: studentPatch }),
+    );
+    await this.db.$transaction(ops);
+    return this.db.user.findUnique({ where: { id: studentId } });
+  }
+
   /** Học sinh có `parentId` = phụ huynh (role STUDENT). */
   async findChildrenByParentId({ parentId }: { parentId: string }) {
     return this.db.user.findMany({

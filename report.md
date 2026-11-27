@@ -114,3 +114,32 @@ Không có finding Critical/High được xác nhận. Năm rủi ro quan trọn
 - Hành vi của third-service (`redis.incr` trả `{count}`, `redis.delByPrefix`, `redis.getdel`, không ghi body `email.*`) suy ra từ code gọi và CLAUDE.md, chưa đọc code third-service.
 - Cần xác minh: F-01 (mô phỏng outage Redis), F-02 (khả năng consume `user_queue`), F-05 (tài liệu Facebook), F-06 (nội dung `.env.compose`, lịch sử git).
 - Không đánh giá: mạng/TLS, cấu hình RabbitMQ/Postgres trên Railway, rate limit của gateway, mức phơi nhiễm thực tế của cổng HTTP.
+
+## 6. Trạng thái fix (đã test lại)
+
+Kiểm tra lần cuối (2026-11-27): `user`: `tsc --noEmit` pass, `jest` 845/846 pass (còn fail `createUserSchema › requires email, firstName, lastName and password`, có sẵn từ trước). `gateway`: `tsc --noEmit` pass, `jest` 525/528 pass; 3 test fail là lỗi có sẵn trước khi sửa (`student update` ADMIN-only trong `student.authz`, `route-guards`, `user.role-guard`). Đã đồng bộ `.claude/rules/conventions.md`.
+
+### Đã fix
+- [x] **F-01**: lockout fail closed (503) khi Redis lỗi, cả đọc lẫn ghi counter (`auth.service.ts`).
+- [x] **F-02**: `actorBind` (HMAC trên pattern + hash payload + `actorSig`) do `gateway` ký trong `withActorSignature(message, pattern)`; user kiểm tra bằng `RpcActorBindingInterceptor` chạy trước replay guard, thiếu hoặc sai thì 403. Helper `rpc-actor-signature.helper.ts` vẫn giống hệt ở hai repo. **Triển khai `gateway` và `user` cùng lúc**, bản cũ không gửi `actorBind` sẽ bị từ chối.
+- [x] **F-03**: nhánh TUTOR của `user.createUser` bỏ `parentId` (`user.service.ts`).
+- [x] **F-04**: Facebook callback đọc `FACEBOOK_OAUTH_REDIRECT_URL`, fallback biến Google.
+- [x] **F-05**: Facebook không còn liên kết tài khoản có sẵn theo email; tài khoản mới tạo với `emailVerified=false`.
+- [x] **F-07**: `revokeSession` dùng `send` thay `emit`.
+- [x] **F-08**: thêm `email`, tên, `userCode`, `googleId`, `facebookId` vào danh sách redact của cả hai interceptor.
+- [x] **F-09**: login và đăng nhập bằng mã người dùng trả cùng `INVALID_CREDENTIALS` (kể cả tài khoản không có mật khẩu); reset với email lạ vẫn đọc Redis như tài khoản thật; tạo học sinh trùng email trả lỗi chung trước khi insert. Còn lại: đăng ký trùng email vẫn 400 (cùng message với trùng username); ẩn hoàn toàn cần luồng "đã gửi mail" giả.
+- [x] **F-10**: admin không tự hạ quyền hoặc vô hiệu hoá chính mình.
+- [x] **F-11**: đổi email revoke toàn bộ session.
+- [x] **F-12**: `JwtAuthGuard` chặn mọi route khi `mustChangePassword`, trừ route có `@AllowWhileMustChangePassword()` (changePassword); RPC có `RpcMustChangePasswordInterceptor` chỉ cho `user.changePassword` và `auth.logout`.
+- [x] **F-13**: `JwtAuthGuard` so role trong token với DB.
+- [x] **F-14**: bỏ handler `kafka.user` (forward payload tuỳ ý sang tutor) và route debug tương ứng ở `gateway`; `student.generateCode` yêu cầu actor ADMIN/TUTOR có chữ ký, `gateway` đã gửi actor. Các handler `kafka.*` còn lại chỉ log/echo, `health.postgres` giữ nguyên.
+- [x] **F-15**: `StudentService.update` kiểm tra và hash trước, rồi ghi một transaction (`StudentRepository.applyStudentUpdate`): student, parent cũ, parent mới và link. Mail tài khoản và revoke session chạy sau commit.
+- [x] **F-16**: mật khẩu mới tối đa 72 byte (`newPasswordSchema`); login giữ 100 ký tự.
+- [x] **F-17**: `ErrorInterceptor` trả `Internal server error` cho lỗi không xác định; giữ mapping mã DB và `Database error` cho lỗi ORM.
+- [x] **F-18**: đếm attempt đổi mật khẩu fail closed khi `redis.incr` trả rỗng.
+- [x] **F-19**: thiếu `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` ở production thì từ chối khởi động.
+- [x] **F-20**: `RPC_ACTOR_SECRET` dưới 32 ký tự ở production thì từ chối khởi động.
+- [x] **F-21**: `jwt.verify` khai báo `algorithms: ['HS256']`.
+
+### Chưa fix
+- [ ] **F-06**: phần code đã xong (`docker-compose.yml` đọc `POSTGRES_*`/`RABBITMQ_DEFAULT_*` từ biến môi trường, `.env.compose*` đã bị xoá khỏi working tree). Còn lại việc của bạn: xoay mật khẩu Postgres và RabbitMQ đã nằm trong git history, tạo `.env` cho compose, và commit việc xoá `.env.compose*`.

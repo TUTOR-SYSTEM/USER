@@ -21,7 +21,7 @@ import {
 } from '@nestjs/swagger';
 import { StatusCodes } from 'http-status-codes';
 import { ZodValidationPipe } from '@packages/pipes';
-import { CurrentUser, Roles } from '@packages/decorators';
+import { AllowWhileMustChangePassword, CurrentUser, Roles } from '@packages/decorators';
 import { RolesGuard } from '@packages/guards';
 import {
   changePasswordSchema,
@@ -229,6 +229,7 @@ export class UserController {
   }
 
   @Post('changePassword')
+  @AllowWhileMustChangePassword()
   @HttpCode(StatusCodes.OK)
   @ApiOperation({
     summary: USER_SWAGGER_MESSAGES.CHANGE_PASSWORD_SUCCESSFULLY,

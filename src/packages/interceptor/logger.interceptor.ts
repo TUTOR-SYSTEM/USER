@@ -33,6 +33,17 @@ const SENSITIVE_KEYS = [
   'parentProvince',
   'dateOfBirth',
   'birthday',
+  // Identity: request logs must not become a copy of the user table either.
+  'email',
+  'parentEmail',
+  'firstName',
+  'lastName',
+  'parentFirstName',
+  'parentLastName',
+  'parentName',
+  'userCode',
+  'googleId',
+  'facebookId',
 ];
 const MAX_LOG_LENGTH = 1000;
 

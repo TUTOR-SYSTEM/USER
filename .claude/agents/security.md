@@ -47,7 +47,7 @@ services, repositories, guards, and schema changes.
   compare actor and target. Flag any new handler that reads identity from the raw payload.
 - **RPC replay**: gateway-signed RPC envelopes are single-use (`RpcActorReplayInterceptor`, Redis
   `incr` per `actorSig`). Flag any new `@MessagePattern` path that skips the interceptor (for example
-  a second microservice that does not register it) or any signature not bound to `actorSigTs`.
+  a second microservice that does not register it) or any signature not bound to `actorSigTs`. The actor is also bound to the pattern and payload (`actorBind`, checked by `RpcActorBindingInterceptor` before the replay guard): flag a handler path that reads actor fields without that interceptor, or a change to `rpc-actor-signature.helper.ts` that is not mirrored in gateway.
 - **Revocation order**: every new revoke path must write its `revoked-all:`/`revoked-session:` marker
   before deleting keys, or an in-flight refresh can revive a session.
 - **Password and session**: every password write revokes sessions (`revokeAllUserSessions`), except

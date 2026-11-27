@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
  * Gateway signs the caller identity it forwards on RPC (`actorId`/`actorRole`/`actorSid`) with a
@@ -116,5 +116,80 @@ export function verifyOAuthProfileSignature(
   );
   const left = Buffer.from(expected, 'utf8');
   const right = Buffer.from(oauthProfileSig, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/**
+ * Fields the gateway adds when it signs. They are left out of the payload hash, so the hash covers
+ * exactly the business data the handler will read.
+ */
+const SIGNATURE_FIELDS = new Set([
+  'actorId',
+  'actorRole',
+  'actorSid',
+  'actorSig',
+  'actorSigTs',
+  'actorBind',
+  'clientIpSig',
+  'clientIpSigTs',
+  'oauthProfileSig',
+  'oauthProfileSigTs',
+]);
+
+/** JSON with sorted keys and no `undefined`, so both services hash the same bytes. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v ?? null)).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** SHA-256 (hex) of the payload without the signature fields. */
+export function hashRpcPayload(payload: unknown): string {
+  // Round-trip through JSON first: that is what the wire does (Dates become strings, etc.).
+  const wire = JSON.parse(JSON.stringify(payload ?? null)) as unknown;
+  if (wire !== null && typeof wire === 'object' && !Array.isArray(wire)) {
+    for (const field of SIGNATURE_FIELDS) delete (wire as Record<string, unknown>)[field];
+  }
+  return createHash('sha256').update(canonicalJson(wire)).digest('hex');
+}
+
+/**
+ * Binds an actor signature to the RPC pattern and the payload it was sent with. Without it, whoever
+ * can publish on the queue could keep a signed actor and swap the pattern or the data.
+ */
+export function computeRpcBindSignature(
+  input: { pattern: string; payloadHash: string; actorSig: string; actorSigTs: number },
+  secret: string,
+): string {
+  return createHmac('sha256', secret)
+    .update(`bind|${input.pattern}|${input.payloadHash}|${input.actorSig}|${input.actorSigTs}`)
+    .digest('hex');
+}
+
+/**
+ * True only when `actorBind` matches this pattern and this payload. Fails closed on a missing
+ * secret, pattern or field.
+ */
+export function verifyRpcBindSignature(
+  pattern: string | undefined,
+  payload: unknown,
+  secret: string | undefined,
+): boolean {
+  if (!secret || !pattern || typeof payload !== 'object' || payload === null) return false;
+  const { actorSig, actorSigTs, actorBind } = payload as Record<string, unknown>;
+  if (typeof actorSig !== 'string' || typeof actorSigTs !== 'number') return false;
+  if (typeof actorBind !== 'string') return false;
+  const expected = computeRpcBindSignature(
+    { pattern, payloadHash: hashRpcPayload(payload), actorSig, actorSigTs },
+    secret,
+  );
+  const left = Buffer.from(expected, 'utf8');
+  const right = Buffer.from(actorBind, 'utf8');
   return left.length === right.length && timingSafeEqual(left, right);
 }

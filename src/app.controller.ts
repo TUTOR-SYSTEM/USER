@@ -48,12 +48,6 @@ export class AppController {
     throw new BadRequestException('data from user failed ...');
   }
 
-  @MessagePattern('kafka.user')
-  async receivedMsgError(@Payload() data: unknown) {
-    this.logger.log(`[SEND] kafka.ping <- gateway, payload=${describePayload(data)}`);
-    return await this.rmqProducer.send<unknown, unknown>('kafka.tutor', data);
-  }
-
   @MessagePattern('kafka.send')
   async handleKafkaSend(@Payload() data: unknown) {
     const startTime = Date.now();

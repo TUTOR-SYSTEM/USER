@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 import { catchError, Observable, throwError } from 'rxjs';
 
+export const INTERNAL_ERROR_MESSAGE = 'Internal server error';
+
 @Injectable()
 export class ErrorInterceptor implements NestInterceptor {
   private readonly logger = new Logger(ErrorInterceptor.name);
@@ -33,11 +35,14 @@ export class ErrorInterceptor implements NestInterceptor {
           return 'Value violates check constraint';
       }
     }
-    const message = error instanceof Error ? error.message : 'Internal server error';
+    const message = error instanceof Error ? error.message : '';
     // ORM errors embed the failed query / invocation text — never echo that to clients.
-    return message.startsWith('Failed query:') || message.includes('Invalid `prisma.')
-      ? 'Database error'
-      : message;
+    if (message.startsWith('Failed query:') || message.includes('Invalid `prisma.')) {
+      return 'Database error';
+    }
+    // Any other unknown error may carry internal detail (SQL, config names, paths): the client gets a
+    // generic text, and the real message stays in the server log (see catchError below).
+    return INTERNAL_ERROR_MESSAGE;
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
