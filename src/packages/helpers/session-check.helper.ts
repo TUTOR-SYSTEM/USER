@@ -100,12 +100,17 @@ export async function isSessionActive(
  */
 export async function revokeAllUserSessions(client: SessionStoreClient, userId: string) {
   // Marker first, so an in-flight refresh that writes after this point is caught by its own check.
-  await client.send('redis.set', {
-    key: revokedAllRedisKey(userId),
-    value: String(Date.now()),
-    ttlSeconds: SESSION_REVOKED_MARKER_TTL_SECONDS,
-  });
-  await client.send('redis.delByPrefix', { prefix: sessionPrefixOf(userId) });
-  await client.send('redis.delByPrefix', { prefix: refreshPrefixOf(userId) });
+  try {
+    await client.send('redis.set', {
+      key: revokedAllRedisKey(userId),
+      value: String(Date.now()),
+      ttlSeconds: SESSION_REVOKED_MARKER_TTL_SECONDS,
+    });
+    await client.send('redis.delByPrefix', { prefix: sessionPrefixOf(userId) });
+    await client.send('redis.delByPrefix', { prefix: refreshPrefixOf(userId) });
+  } catch (error) {
+    // Never a raw transport error (it can carry the broker URL): a neutral 503 the caller can retry.
+    throw new ServiceUnavailableException(ERROR_MESSAGES.SECURITY_CHECK_UNAVAILABLE);
+  }
   forgetCachedSessions(userId);
 }

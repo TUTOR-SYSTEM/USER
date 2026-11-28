@@ -54,7 +54,7 @@ export class AuthController {
   @Public()
   @ApiBearerAuth('access-token')
   @Post('register')
-  @HttpCode(StatusCodes.OK)
+  @HttpCode(StatusCodes.CREATED)
   @ApiOperation({
     summary: 'Register a new user',
     description: 'Create a new user account with email and password',
@@ -73,7 +73,7 @@ export class AuthController {
     },
   })
   @SwaggerResponse({ status: 200, description: 'Registration successful' })
-  @ApiResponse({ statusCode: StatusCodes.OK, message: 'Login successful' })
+  @ApiResponse({ statusCode: StatusCodes.CREATED, message: 'Registration successful' })
   async register(
     @Body(new ZodValidationPipe<RegisterDto>(registerSchema))
     registerDto: RegisterDto,
@@ -228,6 +228,18 @@ export class AuthController {
     return this.authService.forgotPasswordService(forgotPasswordDto);
   }
 
+  // Sends the verification mail again. Same answer whatever the address; only an unverified account gets mail.
+  @Post('resendVerifyEmail')
+  @HttpCode(StatusCodes.OK)
+  @Public()
+  @ApiResponse({ statusCode: StatusCodes.OK, message: 'Request received' })
+  resendVerifyEmail(
+    @Body(new ZodValidationPipe<ForgotPasswordDto>(forgotPasswordSchema))
+    dto: ForgotPasswordDto,
+  ) {
+    return this.authService.resendVerifyEmailService(dto);
+  }
+
   @Public()
   @ApiBearerAuth('access-token')
   @Post('resetPassword')
@@ -260,7 +272,10 @@ export class AuthController {
     },
   })
   @SwaggerResponse({ status: 200, description: 'Password reset successful' })
-  @SwaggerResponse({ status: 422, description: 'Validation failed or token invalid' })
+  @SwaggerResponse({
+    status: 400,
+    description: 'Code invalid or expired (validation errors are 422)',
+  })
   @ApiResponse({ statusCode: StatusCodes.OK, message: 'Reset password successful' })
   resetPassword(
     @Body(new ZodValidationPipe<ResetPasswordDto>(resetPasswordSchema))

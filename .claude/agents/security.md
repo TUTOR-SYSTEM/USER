@@ -53,7 +53,10 @@ services, repositories, guards, and schema changes.
 - **Password and session**: every password write revokes sessions (`revokeAllUserSessions`), except
   `changePasswordService`, which keeps only the caller's `sid`. Refresh and one-time Redis tokens
   are consumed with `redis.getdel`, not get-then-del. Flag refresh-token or session writes that can
-  run after a revoke.
+  run after a revoke. The one allowed re-write is the refresh-hash restore after an infrastructure failure
+  (`restoreRefreshHash`): flag it if it can run after a revoke or when the session is already closed.
+- **Lockout**: login attempts are counted with `redis.incr` before the password check (`reserveLoginAttempt`).
+  Flag any path that verifies a password before counting, or that reads the counter with `get` first.
 - **AuthN**: JWT verification not bypassed; access vs. refresh secrets not confused; token
   TTLs sane; no tokens/passwords logged; refresh tokens only in the httpOnly cookie, never a body.
 - **Injection**: Prisma used parameterized (no `$queryRawUnsafe`/`$executeRawUnsafe`) (no raw string SQL concatenation); dynamic column
@@ -64,6 +67,9 @@ services, repositories, guards, and schema changes.
   `process.env`/`ConfigModule` only.
 - **Data exposure**: responses don't leak password hashes, other users' PII, or internal
   fields; error messages don't reveal existence of others' records inconsistently.
+- **Reset / forgot / resend answers**: a registered and an unknown address must get the same status, message and
+  limit behaviour (guesses and requests are counted per hashed address, before any account lookup). Flag a 429, 400
+  or 503 that depends on whether the account exists, and any reset path that skips `assertResetGuessAllowed`.
 - **Other**: unbounded pagination `limit`, missing rate-limit on auth/reset flows, unsafe
   `onDelete` cascades, email/reset-token handling.
 

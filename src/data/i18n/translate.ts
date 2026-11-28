@@ -30,7 +30,11 @@ export function translateMessage(
     const code = raw.slice(0, sep);
     const suffix = raw.slice(sep + 2);
     const entry = dict[code];
-    if (entry) return `${entry[lang] ?? entry[DEFAULT_LANGUAGE] ?? code}: ${suffix}`;
+    if (entry) {
+      const text = entry[lang] ?? entry[DEFAULT_LANGUAGE] ?? code;
+      // `{}` marks where the suffix goes (e.g. minutes left, so the unit is translated too).
+      return text.includes('{}') ? text.replace('{}', () => suffix) : `${text}: ${suffix}`;
+    }
   }
 
   return raw;

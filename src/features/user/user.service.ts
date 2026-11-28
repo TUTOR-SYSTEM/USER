@@ -182,7 +182,7 @@ export class UserService {
     if (username) return username;
 
     throw new ConflictException(
-      `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME} for "${firstName} ${lastName}" after 10 attempts`,
+      `${ERROR_MESSAGES.UNABLE_TO_GENERATE_USERNAME}: ${firstName} ${lastName}`,
     );
   }
 
@@ -569,7 +569,10 @@ export class UserService {
 
     await this.assertCurrentPassword(userId, dto.currentPassword, user.password);
     if (await compareData(dto.newPassword, user.password)) {
-      throw new BadRequestException(ERROR_MESSAGES.NEW_PASSWORD_MUST_DIFFER);
+      throw new HttpException(
+        ERROR_MESSAGES.NEW_PASSWORD_MUST_DIFFER,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     }
 
     const [fresh] = await this.getUserByField({ field: 'id', value: userId });
@@ -592,16 +595,22 @@ export class UserService {
       jwtTokensConfig,
     );
     const ttlSeconds = jwtTokensConfig.refreshExpiresIn;
-    await this.rmqProducer.send('redis.set', {
-      key: sessionRedisKey(userId, sid),
-      value: '1',
-      ttlSeconds,
-    });
-    await this.rmqProducer.send('redis.set', {
-      key: refreshHashRedisKey(userId, sid),
-      value: hashRefreshToken(refreshToken),
-      ttlSeconds,
-    });
+    try {
+      await this.rmqProducer.send('redis.set', {
+        key: sessionRedisKey(userId, sid),
+        value: '1',
+        ttlSeconds,
+      });
+      await this.rmqProducer.send('redis.set', {
+        key: refreshHashRedisKey(userId, sid),
+        value: hashRefreshToken(refreshToken),
+        ttlSeconds,
+      });
+    } catch (error) {
+      // The password is already changed: say so, so the user does not retry it with the old one.
+      this.logger.warn('Session re-create failed after a password change', error);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.PASSWORD_CHANGED_SIGN_IN_AGAIN);
+    }
 
     return { message: 'Password changed successfully', refreshToken };
   }
@@ -638,10 +647,13 @@ export class UserService {
       attempts = reply.count ?? 0;
     } catch (error) {
       this.logger.warn('Current-password attempt counter unavailable', error);
-      throw new ServiceUnavailableException(ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE);
+      throw new ServiceUnavailableException(ERROR_MESSAGES.SECURITY_CHECK_UNAVAILABLE);
     }
     if (attempts > CURRENT_PASSWORD_MAX_ATTEMPTS) {
-      throw new HttpException(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException(
+        ERROR_MESSAGES.CURRENT_PASSWORD_TOO_MANY_ATTEMPTS,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
     if (!password || !(await compareData(password, hash))) {
       throw new BadRequestException(ERROR_MESSAGES.CURRENT_PASSWORD_INCORRECT);

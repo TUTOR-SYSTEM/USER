@@ -5,7 +5,7 @@
 - **Validation**: every request body/query is validated with a **Zod v4** schema via
   `new ZodValidationPipe<Dto>(schema)`. DTOs are `z.infer<>` types, never hand-written interfaces.
   Pagination query schemas use plain `z.coerce.number()` fields (`page`/`limit`), not `z.preprocess`.
-- **Secrets**: never read, print, or edit `.env*` files (a PreToolUse hook blocks edits).
+- **Secrets**: `.env*` files may be read and edited (no hook gate; user decision 2026-11-28). Never print secret values into chat or commit them.
   Reference config via `process.env` / `ConfigModule`.
 - **Style**: single quotes, trailing commas, 100-char width, semicolons. Formatting/lint is
   auto-applied by a PostToolUse hook, so match surrounding code and let the hook normalize it.
@@ -24,12 +24,7 @@
 - **Swagger**: body/query schemas in `src/data/swaggers/data/{name}.swagger.ts`, response
   messages in `src/data/swaggers/messages/{name}.msg.ts`. Use `@ApiResponse()` decorator from
   `@packages/decorators` for success messages.
-- **Request logging**: the global `LoggerInterceptor` (`@packages/interceptor`, wired in
-  `main.ts`) logs `[Request]`/`[Response]`/`[Error]`/`[Timing]` lines including the request body
-  and response data, redacting any key in its `SENSITIVE_KEYS` list (`password`, `token`,
-  `accessToken`, `refreshToken`, etc.) and truncating logged JSON at 1000 chars. If a new field
-  name carrying a secret is introduced (e.g. a new `*Secret`/`*Key` DTO field), add it to
-  `SENSITIVE_KEYS` rather than relying on truncation to hide it.
+- **Request logging (removed 2026-11-28)**: the request/response logging interceptor, the `log-sink` pipeline and the `request_logs` writes were deleted. Do not add request logging back. Error responses still go through `ErrorInterceptor` and `HttpExceptionFilter`, and boot/error messages still use the Nest `Logger`. Correlation ids and `RequestContext` still propagate as described in the tracing bullet.
 - **RPC pass/fail logging**: `RmqProducer.send`/`.emit` (`src/features/rabbitmq/rmq.producer.ts`)
   already log `[SEND-START]`/`[EMIT]` on dispatch and `[SEND-ATTEMPT-FAILED]`/`[SEND-FAILED]` on
   errors, each with the pattern + `correlationId`/`traceId` — this is built into the shared
@@ -58,10 +53,14 @@
   (`RpcActorReplayInterceptor`). Gateway signs centrally in `withActorSignature`; keep
   `rpc-actor-signature.helper.ts` identical in both repos. Every `auth.*` RPC payload is validated with the
   same Zod schema as its HTTP route (`parseRpcPayload`), never trusted as-is.
-- **Password-reset code is brute-force bounded across codes**: besides the 5 guesses per code, an account gets
-  10 guesses per hour in total (`reset-password-otp-window:{userId}`, not reset by requesting a new code), and
-  `forgotPassword` sends at most 3 codes per address per hour (counted for unknown addresses too). Both
-  fail closed when Redis is unavailable.
+- **bcrypt byte cap (F-16, 2026-11-28)**: bcrypt reads only the first 72 UTF-8 bytes. Every write-side password schema must cap bytes too, not just characters: `newPasswordSchema` (`password.schema.ts`, `BCRYPT_MAX_BYTES`) and `studentPasswordSchema` (`student.schema.ts`). Login keeps 100 characters with no byte check because it only compares. Add the same byte check to any new password schema.
+- **Password-reset code is brute-force bounded per address**: every reset guess is counted against the
+  address (hashed email), whether or not the account exists or has a code: 5 guesses per code lifetime
+  (`reset-password-email-attempts:`, 5 min) and 10 per hour (`reset-password-email-window:`), so a registered and
+  an unknown address answer the same at the limit. Per-code and per-account counters still apply. Requesting a new
+  code does not reset the address counters. `forgotPassword` sends at most 3 codes per address per hour (counted for
+  unknown addresses too; over quota is a 429 for everyone), skips deactivated accounts and placeholder addresses, and
+  fails closed (503). A code is put back when the password was not changed by an infrastructure failure.
 - **Browser OAuth redirect never carries the refresh token**: access token in the URL fragment, refresh token
   in the httpOnly `refresh_token` cookie (`setRefreshCookie`), same as gateway.
 - **"Current password" checks are throttled and gate email changes**: `UserService.assertCurrentPassword` counts
@@ -78,7 +77,10 @@
   forged IP is ignored and the shared bucket applies. The counter is keyed by IP and account, so one
   IP cannot lock the account for other IPs. A second counter per account (`LOGIN_ACCOUNT_MAX_ATTEMPTS`,
   default 20) is checked too, so distributed guessing of one account still hits a ceiling. That counter
-  is not cleared on success.
+  is not cleared on success. **Attempts are counted before the password is checked** (`reserveLoginAttempt`,
+  atomic `redis.incr`): every attempt takes a slot, successful ones included, so parallel guesses cannot all
+  pass a check that the others have not incremented. The IP counter is cleared on success; the account counter
+  is a rate limit per window (20 sign-ins per account per 15 min by default).
 - **Password change keeps the current device**: `UserService.changePasswordService(userId, dto, sid)`
   verifies the current password, revokes all sessions, then writes the new password, and finally
   re-creates only the caller's session (`sid`) with a new refresh token. Revoke comes before the
@@ -95,21 +97,44 @@
   `AdminService.setTutorPassword` / `StudentService.setPassword` are the reference.
 - **Single-use Redis tokens use GETDEL**: one-time values (refresh hash on rotate, verify-email
   jti, reset-OTP) are read with `redis.getdel` (`redisGetAndDelete`), never `get` followed by a
-  later `del`, so two concurrent requests cannot both consume them.
+  later `del`, so two concurrent requests cannot both consume them. **Exception (refresh only):** if the
+  rotation fails for an infrastructure reason before the new pair is stored, `refreshTokens` writes the consumed
+  hash back (`restoreRefreshHash`), so a transient Redis/RabbitMQ error does not sign the client out. It never
+  restores after a revoke or a closed session, and the restore is best effort.
 - **Session cache is per process**: `isSessionActive` caches positive answers for 1s;
   `revokeAllUserSessions` clears that process's cache, other processes lag at most that long.
 - **Revocation markers beat in-flight refreshes**: every revoke writes `revoked-all:{uid}` or
   `revoked-session:{uid}:{sid}` (ms timestamp) before it deletes keys. `refreshTokens` writes the new
   session, then reads the markers. A marker at or after the refresh's start time undoes the write and
   rejects. Any new revoke path must write its marker before its deletes. The deletes go through awaited `rmqProducer.send('redis.del', …)`, never `emit`: `emit` resolves on publish, so a logout could report success while the session key survives.
-- **Lockout counters fail closed**: `assertLoginNotLocked` and `recordLoginFailure` throw 503 (`SESSION_CHECK_UNAVAILABLE`) when Redis is unreadable, so a right and a wrong password answer the same during an outage.
+- **Lockout counters fail closed**: `reserveLoginAttempt` (via `incrLoginCounter`) throws 503 (`SESSION_CHECK_UNAVAILABLE`) when the counter is unreachable or its reply is not a number, so a right and a wrong password answer the same during an outage.
 - **Guard checks role against the DB**: `JwtAuthGuard` selects `role` with `isActive` and rejects a token whose role differs from the row, so a demotion bites at once even if revoke failed.
 - **Facebook email is not proof**: `findOrCreateOAuthUser(profile, { emailProven: false })` refuses to link an existing account and creates new ones with `emailVerified=false`. Only Google (which sends `email_verified`) may link by email.
 - **New passwords are capped at 72 bytes** (bcrypt reads no more); the login schema keeps 100 chars so old accounts can still sign in. In production the boot fails when `RPC_ACTOR_SECRET` is under 32 chars or Google OAuth credentials are missing.
 - **TUTOR `user.createUser` drops `parentId`**: parents are attached through the student surface, which applies the `findParentForActor` sharing policy.
+- **Session store and revoke failures are 503, never raw**: `issueTokens` and `revokeSession` wrap their awaited
+  Redis/RMQ calls and rethrow `ServiceUnavailableException(SESSION_CHECK_UNAVAILABLE)`. A transport error
+  (which can carry the broker URL) must never reach the client as a message.
+- **Translated messages with a number**: a `CODE: value` message is localized by `translateMessage`. If the dictionary
+  text contains `{}`, the value goes there (for example `TOO_MANY_LOGIN_ATTEMPTS_WAIT`, "…try again in {} minutes");
+  otherwise the value is appended after `: `.
+- **Auth RPC payloads are Zod-parsed, including `auth.logout`** (`logoutSchema`), after the actor check.
 - **Log redaction covers identity fields** (`email`, names, `userCode`, provider ids) in both interceptors.
 - **`mustChangePassword` is enforced server-side**: `JwtAuthGuard` refuses every HTTP route for such an account unless the handler has `@AllowWhileMustChangePassword()` (only `changePassword`); `RpcMustChangePasswordInterceptor` does the same for acting RPCs except `user.changePassword` and `auth.logout`. New self-service routes a flagged user needs must carry the decorator.
 - **Unknown errors reach clients as `Internal server error`** (`ErrorInterceptor`): known DB codes and ORM text keep their mapped messages, the real message is only logged.
-- **Sign-in failures are uniform**: unknown account, OAuth-only account and wrong password all return `INVALID_CREDENTIALS` with one bcrypt compare; keep it that way for new login paths.
+- **Sign-in failures name the cause (2026-11-28)**: `loginService` answers an unknown email with
+  `EMAIL_NOT_REGISTERED` (401), a wrong password (and an OAuth-only account) with `INVALID_PASSWORD` (401), and
+  `loginByUserCodeService` an unknown code or role with `USER_CODE_NOT_FOUND`. This lets a caller learn which emails
+  have accounts, a trade-off the owner chose. Lockout (429), disabled accounts (401 `ACCOUNT_DEACTIVATED`) and the
+  Redis-unavailable 503 are unchanged. Registration still answers a registered email like a new sign-up (F-09).
+  Google/Facebook callbacks keep the generic `INVALID_CREDENTIALS`.
+- **Registering a taken email answers like a new sign-up (F-09)**: `AuthService.registerService` checks the
+  username first (a taken username is a 400 `AUTH_USERNAME_TAKEN` for every address, so it never reveals the email).
+  Then it checks the email; if it is registered, `registerDecoy` runs a bcrypt hash, sends the owner a notice through
+  `email.sendAccountExists` (best-effort), and returns the same 201 shape with a random id and the same username
+  generator as a real sign-up. It writes nothing to the DB. A concurrent insert that loses on the email is re-checked and
+  gets the same decoy. Keep new public sign-up paths on this behaviour.
+- **Verification mail can be re-sent**: `auth.resendVerifyEmail` (`POST /auth/resendVerifyEmail`, public) sends the mail
+  only to an unverified, active account with a real address, and is limited to 3 per address per hour.
 - **Actor signature is bound to pattern and payload**: gateway adds `actorBind` (HMAC over `pattern`, `hashRpcPayload(payload)`, `actorSig`, `actorSigTs`) in `withActorSignature(message, pattern)`; `RpcActorBindingInterceptor` (first in `main.ts`, before the replay guard) answers 403 when it is missing or does not match. The payload hash skips the signature fields, uses sorted keys and ignores `undefined`. Keep `rpc-actor-signature.helper.ts` identical in both repos, and deploy both together. New acting RPCs need nothing extra: the producer binds every signed actor.
 - **`student.generateCode` needs a signed ADMIN/TUTOR actor** like the other acting RPCs; gateway forwards `actorId`/`actorRole`.

@@ -74,12 +74,13 @@ export class AdminService {
     this.assertAdmin(actor);
     this.assertUuid(id);
     await this.getManagedUser(id, 'TUTOR');
+    // Revoke first: if Redis fails the password stays as it was, never changed with old sessions alive.
+    await revokeAllUserSessions(this.rmqProducer, id);
     await this.adminRepository.updateByIdAndRole(id, 'TUTOR', {
       password: await hashData(password),
       // An admin-set password is temporary: the tutor must choose their own at next sign-in.
       mustChangePassword: true,
     });
-    await revokeAllUserSessions(this.rmqProducer, id);
     return { id, passwordUpdated: true };
   }
 

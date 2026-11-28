@@ -16,8 +16,8 @@ export const SUCCESS_TRANSLATIONS = {
   REGISTER_SUCCESS: { vi: 'Đăng ký thành công', en: 'Registration successful' },
   TOKEN_REFRESHED: { vi: 'Làm mới token thành công', en: 'Token refreshed' },
   FORGOT_PASSWORD_SUCCESS: {
-    vi: 'Gửi yêu cầu quên mật khẩu thành công',
-    en: 'Forgot password successful',
+    vi: 'Nếu email đã được đăng ký, mã xác nhận sẽ được gửi tới email đó',
+    en: 'If the email is registered, a reset code will be sent to it',
   },
   RESET_PASSWORD_SUCCESS: { vi: 'Đặt lại mật khẩu thành công', en: 'Reset password successful' },
 

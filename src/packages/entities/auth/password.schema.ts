@@ -5,7 +5,7 @@ import { ERROR_MESSAGES } from 'src/data/constants';
 export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 100;
 /** bcrypt ignores everything past 72 bytes. */
-const BCRYPT_MAX_BYTES = 72;
+export const BCRYPT_MAX_BYTES = 72;
 
 /**
  * Complexity rules shared by every password write. Runs only when the length is already valid so
@@ -32,7 +32,7 @@ export const newPasswordSchema = z
   .max(PASSWORD_MAX_LENGTH, { message: ERROR_MESSAGES.AUTH_PASSWORD_MAX })
   // bcrypt only reads the first 72 bytes: longer input would make different passwords equal.
   .refine((password) => Buffer.byteLength(password, 'utf8') <= BCRYPT_MAX_BYTES, {
-    message: ERROR_MESSAGES.AUTH_PASSWORD_MAX,
+    message: ERROR_MESSAGES.AUTH_PASSWORD_MAX_BYTES,
   })
   .superRefine((password, ctx) => refinePasswordComplexity(password, ctx, []));
 

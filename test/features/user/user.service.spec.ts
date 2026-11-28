@@ -587,7 +587,7 @@ describe('UserService', () => {
           { currentPassword: 'real-old', newPassword: 'New-1' } as never,
           SID,
         ),
-      ).rejects.toThrow('redis down');
+      ).rejects.toMatchObject({ message: 'SECURITY_CHECK_UNAVAILABLE' });
       expect(repo.updatePassword).not.toHaveBeenCalled();
     });
 
