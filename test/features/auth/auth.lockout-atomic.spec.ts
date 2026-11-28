@@ -254,7 +254,7 @@ describe('AuthService atomic reset and per-account lockout', () => {
       await expect(
         service.loginService({ email: EMAIL, password: 'correct-password' }),
       ).rejects.toMatchObject({
-        message: `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: 3 phút`,
+        message: `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS_WAIT}: 3`,
       });
     });
 
@@ -269,7 +269,7 @@ describe('AuthService atomic reset and per-account lockout', () => {
       await expect(
         service.loginService({ email: EMAIL, password: 'correct-password' }),
       ).rejects.toMatchObject({
-        message: `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS}: 2 phút`,
+        message: `${ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS_WAIT}: 2`,
       });
     });
 
@@ -330,7 +330,7 @@ describe('AuthService atomic reset and per-account lockout', () => {
       const service = build();
       const real = rmq.send.getMockImplementation()!;
       rmq.send.mockImplementation((pattern: string, payload: Record<string, unknown>) =>
-        pattern === 'redis.get' ? Promise.reject(new Error('timeout')) : real(pattern, payload),
+        pattern === 'redis.incr' ? Promise.reject(new Error('timeout')) : real(pattern, payload),
       );
 
       await expect(
@@ -351,6 +351,55 @@ describe('AuthService atomic reset and per-account lockout', () => {
       ).rejects.toMatchObject({
         message: expect.stringContaining(ERROR_MESSAGES.TOO_MANY_LOGIN_ATTEMPTS),
       });
+    });
+  });
+
+  describe('race and storage failures (Login / refresh / logout)', () => {
+    it('lets only the limit through when parallel attempts run at once', async () => {
+      const service = build();
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          statusOf(service.loginService({ email: EMAIL, password: 'wrong-password' })),
+        ),
+      );
+
+      expect(results.filter((s) => s === HttpStatus.UNAUTHORIZED)).toHaveLength(5);
+      expect(results.filter((s) => s === HttpStatus.TOO_MANY_REQUESTS)).toHaveLength(15);
+    });
+
+    it('answers 503 when the session cannot be stored after a correct password', async () => {
+      const service = build();
+      const real = rmq.send.getMockImplementation()!;
+      rmq.send.mockImplementation((pattern: string, payload: Record<string, unknown>) =>
+        pattern === 'redis.set'
+          ? Promise.reject(new Error('amqp://admin:secret@broker'))
+          : real(pattern, payload),
+      );
+
+      await expect(
+        service.loginService({ email: EMAIL, password: 'correct-password' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE });
+    });
+
+    it('puts the refresh hash back when storing the new pair fails, so the client can retry', async () => {
+      const service = build();
+      const login = await service.loginService({ email: EMAIL, password: 'correct-password' });
+      const real = rmq.send.getMockImplementation()!;
+      let failSet = true; // only the first store fails; the hash restore must get through
+      rmq.send.mockImplementation((pattern: string, payload: Record<string, unknown>) =>
+        pattern === 'redis.set' && failSet
+          ? ((failSet = false), Promise.reject(new Error('timeout')))
+          : real(pattern, payload),
+      );
+
+      await expect(
+        service.refreshTokens({ refreshToken: login.refreshToken }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE });
+
+      failSet = false;
+      await expect(
+        service.refreshTokens({ refreshToken: login.refreshToken }),
+      ).resolves.toMatchObject({ accessToken: expect.any(String) });
     });
   });
 });

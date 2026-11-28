@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Logger,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -105,6 +106,7 @@ describe('AuthService', () => {
     rmq = fakeRmq();
     userService = {
       getUserByField: jest.fn().mockResolvedValue([]),
+      generateUsername: jest.fn().mockResolvedValue('ann-le'),
       createUserService: jest.fn().mockResolvedValue({ message: 'ok', data: {} }),
       updateUserPasswordService: jest.fn().mockResolvedValue({}),
       setEmailVerifiedService: jest.fn().mockResolvedValue({ id: USER_ID, emailVerified: true }),
@@ -161,30 +163,30 @@ describe('AuthService', () => {
       });
       await expect(
         service.loginService({ email: 'a@b.test', password: 'correct-password' }),
-      ).rejects.toThrow('redis down');
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.SESSION_CHECK_UNAVAILABLE });
     });
 
-    it('answers an unknown email with INVALID_CREDENTIALS', async () => {
+    it('answers an unknown email with EMAIL_NOT_REGISTERED', async () => {
       await expect(
         service.loginService({ email: 'x@y.test', password: 'whatever1' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.EMAIL_NOT_REGISTERED });
     });
 
-    it('answers a wrong password with the same INVALID_CREDENTIALS as an unknown email', async () => {
+    it('answers a wrong password with INVALID_PASSWORD', async () => {
       userService.getUserByField.mockResolvedValue([user({ password: correctHash })]);
       await expect(
         service.loginService({ email: 'x@y.test', password: 'wrong' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_PASSWORD });
     });
 
-    it('answers an OAuth-only account (no password) with INVALID_CREDENTIALS', async () => {
+    it('answers an OAuth-only account (no usable password) with INVALID_PASSWORD', async () => {
       userService.getUserByField.mockResolvedValue([user({ password: null })]);
       await expect(
         service.loginService({ email: 'x@y.test', password: 'whatever1' }),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_PASSWORD });
     });
 
-    it('answers an unknown user code with INVALID_CREDENTIALS', async () => {
+    it('answers an unknown user code with USER_CODE_NOT_FOUND', async () => {
       userService.getUserByField.mockResolvedValue([]);
       await expect(
         service.loginByUserCodeService({
@@ -192,10 +194,10 @@ describe('AuthService', () => {
           password: 'x',
           role: 'STUDENT',
         } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.INVALID_CREDENTIALS });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.USER_CODE_NOT_FOUND });
     });
 
-    it('gives the same message and runs one bcrypt compare for unknown and wrong-password logins', async () => {
+    it('gives distinct messages for an unknown email and a wrong password', async () => {
       const unknown = await service
         .loginService({ email: 'nobody@y.test', password: 'whatever1' })
         .catch((e: Error) => e);
@@ -203,7 +205,8 @@ describe('AuthService', () => {
       const wrong = await service
         .loginService({ email: 'x@y.test', password: 'wrong' })
         .catch((e: Error) => e);
-      expect((unknown as Error).message).toBe((wrong as Error).message);
+      expect((unknown as Error).message).toBe(ERROR_MESSAGES.EMAIL_NOT_REGISTERED);
+      expect((wrong as Error).message).toBe(ERROR_MESSAGES.INVALID_PASSWORD);
     });
 
     it('still signs in a legacy account whose password is shorter than the new minimum', async () => {
@@ -340,7 +343,7 @@ describe('AuthService', () => {
       const sidA = (jwt.decode(a.accessToken) as Record<string, string>).sid;
 
       await expect(service.logoutService({ userId: USER_ID, sid: sidA })).resolves.toEqual({
-        message: 'Logged out',
+        message: 'LOGOUT_SUCCESS',
       });
       expect(rmq.send).toHaveBeenCalledWith('redis.del', {
         keys: [`session:${USER_ID}:${sidA}`, `refresh:${USER_ID}:${sidA}`],
@@ -358,17 +361,57 @@ describe('AuthService', () => {
   });
 
   describe('register', () => {
-    it('lowercases the email and answers a duplicate with the generic error (no echo of the email)', async () => {
+    it('answers a registered email like a new sign-up: no error, no existing id, no mail (F-09)', async () => {
+      userService.getUserByField.mockResolvedValueOnce([user()]);
+      const res = await service.registerService({
+        email: 'Student@Example.test',
+        password: 'Abcdef1!',
+        firstName: 'Ann',
+        lastName: 'Le',
+      } as never);
+      expect(res.user).toMatchObject({
+        email: 'student@example.test',
+        firstName: 'Ann',
+        lastName: 'Le',
+      });
+      expect(res.user.id).not.toBe(USER_ID);
+      expect(userService.createUserService).not.toHaveBeenCalled();
+      expect(rmq.send.mock.calls.some(([p]) => p === 'email.sendVerifyEmail')).toBe(false);
+      expect(rmq.send).toHaveBeenCalledWith('email.sendAccountExists', {
+        to: 'student@example.test',
+        email: 'student@example.test',
+        displayName: 'Ann',
+      });
+    });
+
+    it('still rejects a taken username when the email is free', async () => {
+      // The username is checked first, so a taken username is refused whatever the email is.
       userService.getUserByField.mockResolvedValueOnce([user()]);
       await expect(
         service.registerService({
-          email: 'Student@Example.test',
+          email: 'new@b.test',
+          username: 'taken',
           password: 'Abcdef1!',
           firstName: 'Ann',
           lastName: 'Le',
         } as never),
-      ).rejects.toMatchObject({ message: ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS });
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.AUTH_USERNAME_TAKEN });
       expect(userService.createUserService).not.toHaveBeenCalled();
+    });
+
+    it('answers like a duplicate when a concurrent sign-up takes the email first', async () => {
+      userService.getUserByField.mockResolvedValueOnce([]).mockResolvedValueOnce([user()]);
+      userService.createUserService.mockRejectedValueOnce(
+        new ConflictException(ERROR_MESSAGES.ACCOUNT_ALREADY_EXISTS),
+      );
+      const res = await service.registerService({
+        email: 'a@b.test',
+        password: 'Abcdef1!',
+        firstName: 'Ann',
+        lastName: 'Le',
+      } as never);
+      expect(res.user.email).toBe('a@b.test');
+      expect(rmq.send.mock.calls.some(([p]) => p === 'email.sendVerifyEmail')).toBe(false);
     });
 
     it('stores the verify token bound to the user id and email', async () => {
@@ -447,27 +490,36 @@ describe('AuthService', () => {
     const mailsSent = () =>
       rmq.send.mock.calls.filter(([pattern]) => pattern === 'email.sendPasswordResetOtp').length;
 
-    it('sends at most 3 reset codes per address per window, and answers the same each time', async () => {
+    it('sends at most 3 reset codes per address per window; over quota is a 429 for everyone', async () => {
       userService.getUserByField.mockResolvedValue([user()]);
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 3; i++) {
         await expect(
           service.forgotPasswordService({ email: 'Student@Example.test' }),
         ).resolves.toEqual({ ok: true });
         await flush();
       }
+      await expect(
+        service.forgotPasswordService({ email: 'Student@Example.test' }),
+      ).rejects.toMatchObject({ message: ERROR_MESSAGES.AUTH_TOO_MANY_REQUESTS });
+      await flush();
       expect(mailsSent()).toBe(3);
     });
 
     it('counts unknown addresses too, so the quota reveals nothing', async () => {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 3; i++) {
         await service.forgotPasswordService({ email: 'nobody@b.test' });
       }
+      await expect(service.forgotPasswordService({ email: 'nobody@b.test' })).rejects.toMatchObject(
+        {
+          message: ERROR_MESSAGES.AUTH_TOO_MANY_REQUESTS,
+        },
+      );
       expect(mailsSent()).toBe(0);
       const key = [...rmq.store.keys()].find((k) => k.startsWith('forgot-password-rate:'));
       expect(rmq.store.get(key as string)).toBe('4');
     });
 
-    it('sends nothing when the counter is unavailable (fails closed)', async () => {
+    it('fails closed with 503 and sends nothing when the counter is unavailable', async () => {
       userService.getUserByField.mockResolvedValue([user()]);
       const original = rmq.send.getMockImplementation()!;
       rmq.send.mockImplementation(async (pattern, payload) => {
@@ -476,7 +528,7 @@ describe('AuthService', () => {
       });
       await expect(
         service.forgotPasswordService({ email: 'student@example.test' }),
-      ).resolves.toEqual({ ok: true });
+      ).rejects.toMatchObject({ message: 'SECURITY_CHECK_UNAVAILABLE' });
       await flush();
       expect(mailsSent()).toBe(0);
     });
@@ -514,13 +566,15 @@ describe('AuthService', () => {
       expect(rmq.send.mock.calls.map(([pattern]) => pattern)).toContain('redis.get');
     });
 
-    it('stops guessing after 10 tries in a window even when a fresh code is requested each time', async () => {
-      for (let i = 0; i < 10; i++) {
+    it('stops guessing after 5 tries per address even when a fresh code is requested each time', async () => {
+      for (let i = 0; i < 5; i++) {
         putCode(`code-${i}`); // what forgotPassword does: a new code with its own fresh counter
         await expect(reset('000000')).rejects.toThrow(BadRequestException);
       }
       putCode('code-final');
-      await expect(reset(OTP)).rejects.toMatchObject({ status: 429 });
+      await expect(reset(OTP)).rejects.toMatchObject({
+        message: ERROR_MESSAGES.RESET_OTP_TOO_MANY_ATTEMPTS,
+      });
       expect(userService.updateUserPasswordService).not.toHaveBeenCalled();
     });
 

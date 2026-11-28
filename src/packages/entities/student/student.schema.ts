@@ -1,14 +1,20 @@
+import { ERROR_MESSAGES } from 'src/data/constants';
 import { z } from 'zod';
+import { BCRYPT_MAX_BYTES } from '../auth/password.schema';
 
 /** Mật khẩu do gia sư/admin đặt: 8–100 ký tự, đủ chữ thường, chữ hoa, số, ký tự đặc biệt (khớp auth). */
 export const studentPasswordSchema = z
-  .string({ message: 'Password is required' })
-  .min(8, { message: 'Password must be at least 8 characters' })
-  .max(100, { message: 'Password must not exceed 100 characters' })
-  .regex(/[a-z]/, { message: 'Password must contain a lowercase letter' })
-  .regex(/[A-Z]/, { message: 'Password must contain an uppercase letter' })
-  .regex(/\d/, { message: 'Password must contain a number' })
-  .regex(/[^A-Za-z0-9]/, { message: 'Password must contain a special character' });
+  .string({ message: ERROR_MESSAGES.AUTH_PASSWORD_REQUIRED })
+  .min(8, { message: ERROR_MESSAGES.AUTH_PASSWORD_MIN })
+  .max(100, { message: ERROR_MESSAGES.AUTH_PASSWORD_MAX })
+  // bcrypt reads only 72 bytes: a longer password would match a different one.
+  .refine((p) => Buffer.byteLength(p, 'utf8') <= BCRYPT_MAX_BYTES, {
+    message: ERROR_MESSAGES.AUTH_PASSWORD_MAX_BYTES,
+  })
+  .regex(/[a-z]/, { message: ERROR_MESSAGES.AUTH_PASSWORD_LOWERCASE })
+  .regex(/[A-Z]/, { message: ERROR_MESSAGES.AUTH_PASSWORD_UPPERCASE })
+  .regex(/\d/, { message: ERROR_MESSAGES.AUTH_PASSWORD_DIGIT })
+  .regex(/[^A-Za-z0-9]/, { message: ERROR_MESSAGES.AUTH_PASSWORD_SPECIAL });
 
 export const createStudentSchema = z.object({
   email: z.string().trim().toLowerCase().email('Invalid email').optional(),

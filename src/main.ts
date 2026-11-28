@@ -9,11 +9,10 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { ResponseInterceptor } from '@packages/interceptor/response.interceptor';
-import { ErrorInterceptor, LoggerInterceptor } from '@packages/interceptor';
+import { ErrorInterceptor } from '@packages/interceptor';
 import { HttpExceptionFilter, RpcExceptionFilter } from '@packages/filters';
 import { TraceContextInterceptor } from '@packages/interceptor';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
-import { setLogSink } from '@packages/context/log-sink';
 import { RmqProducer } from './features/rabbitmq/rmq.producer';
 import { RpcActorBindingInterceptor } from './features/rabbitmq/rpc-actor-binding.interceptor';
 import { RpcActorReplayInterceptor } from './features/rabbitmq/rpc-actor-replay.interceptor';
@@ -42,9 +41,7 @@ async function bootstrap() {
   });
   app.enableShutdownHooks();
 
-  // Ships every RPC-hop row to third-service's `request_logs` table, fire-and-forget.
   const rmqProducer = app.get(RmqProducer);
-  setLogSink((entry) => rmqProducer.emit('log.create', entry));
 
   // `deferInitialization: true` is required: by default `connectMicroservice()` synchronously
   // calls `registerListeners()` before returning, which binds every @MessagePattern handler to
@@ -93,7 +90,7 @@ async function bootstrap() {
     .filter(Boolean);
   app.enableCors({ origin: corsOrigins.length > 0 ? corsOrigins : false, credentials: true });
   app.useGlobalInterceptors(new ResponseInterceptor(app.get(Reflector)));
-  app.useGlobalInterceptors(new ErrorInterceptor(), new LoggerInterceptor());
+  app.useGlobalInterceptors(new ErrorInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // The API docs list every route and its schema: open in development, opt-in elsewhere.

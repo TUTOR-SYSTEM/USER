@@ -10,6 +10,32 @@ export interface AccountMailClient {
   ): Promise<TResponse>;
 }
 
+export interface AccountExistsMailInput {
+  email: string;
+  displayName: string;
+}
+
+/**
+ * Tells the owner of `email` that someone tried to sign up with it (F-09). Best-effort and never
+ * throws: the sign-up answer must not depend on this mail. Only the error name is logged.
+ */
+export async function sendAccountExistsMail(
+  client: AccountMailClient,
+  input: AccountExistsMailInput,
+): Promise<void> {
+  if (!input.email || input.email.endsWith(PLACEHOLDER_EMAIL_SUFFIX)) return;
+  try {
+    await client.send<unknown, Record<string, string>>('email.sendAccountExists', {
+      to: input.email,
+      email: input.email,
+      displayName: input.displayName,
+    });
+  } catch (error: unknown) {
+    const name = error instanceof Error ? error.name : 'UnknownError';
+    logger.warn(`Failed to send account-exists email (${name})`);
+  }
+}
+
 export interface AccountCreatedMailInput {
   userId: string;
   email: string;

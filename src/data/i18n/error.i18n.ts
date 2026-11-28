@@ -124,6 +124,10 @@ export const ERROR_TRANSLATIONS = {
     vi: 'Mật khẩu không được quá 100 ký tự',
     en: 'Password must be at most 100 characters long',
   },
+  AUTH_PASSWORD_MAX_BYTES: {
+    vi: 'Mật khẩu quá dài: tối đa 72 byte UTF-8 (có thể ít hơn 72 ký tự nếu có chữ có dấu)',
+    en: 'Password is too long: at most 72 bytes in UTF-8 (fewer than 72 characters if it has accented letters)',
+  },
   MANAGED_PASSWORD_MAX: {
     vi: 'Mật khẩu không được quá 20 ký tự',
     en: 'Password must be at most 20 characters long',
@@ -190,6 +194,30 @@ export const ERROR_TRANSLATIONS = {
     vi: 'Mật khẩu xác nhận không khớp với mật khẩu',
     en: 'Confirm password must be the same as password',
   },
+  AUTH_USERNAME_INVALID: { vi: 'Tên đăng nhập không hợp lệ', en: 'Username is invalid' },
+  AUTH_USERNAME_TAKEN: { vi: 'Tên đăng nhập đã được sử dụng', en: 'Username is already taken' },
+  AUTH_TOO_MANY_REQUESTS: {
+    vi: 'Đã gửi quá nhiều yêu cầu cho địa chỉ này, vui lòng thử lại sau 1 giờ',
+    en: 'Too many requests for this address, please try again in an hour',
+  },
+  RESET_OTP_WINDOW_LOCKED: {
+    vi: 'Nhập sai mã quá nhiều lần trong 1 giờ, vui lòng thử lại sau',
+    en: 'Too many wrong codes in the last hour, please try again later',
+  },
+  SECURITY_CHECK_UNAVAILABLE: {
+    vi: 'Hệ thống tạm thời chưa xử lý được yêu cầu, vui lòng thử lại',
+    en: 'The request could not be processed right now, please try again',
+  },
+  PASSWORD_CHANGED_SIGN_IN_AGAIN: {
+    vi: 'Mật khẩu đã được đổi, nhưng phiên hiện tại không được gia hạn. Vui lòng đăng nhập lại',
+    en: 'Your password was changed, but this session could not be renewed. Please sign in again',
+  },
+  CURRENT_PASSWORD_TOO_MANY_ATTEMPTS: {
+    vi: 'Nhập sai mật khẩu hiện tại quá nhiều lần, vui lòng thử lại sau',
+    en: 'Too many wrong current-password attempts, please try again later',
+  },
+  EMAIL_NOT_REGISTERED: { vi: 'Email chưa được đăng ký', en: 'This email is not registered' },
+  AUTH_ROLE_INVALID: { vi: 'Vai trò không hợp lệ', en: 'Invalid role' },
   AUTH_USER_CODE_REQUIRED: { vi: 'Vui lòng nhập mã người dùng', en: 'User code is required' },
   AUTH_USER_CODE_LENGTH: {
     vi: 'Mã người dùng phải gồm 6 ký tự',
@@ -333,6 +361,10 @@ export const ERROR_TRANSLATIONS = {
   TOO_MANY_LOGIN_ATTEMPTS: {
     vi: 'Đăng nhập sai quá nhiều lần, vui lòng thử lại sau',
     en: 'Too many failed sign-in attempts, please try again later',
+  },
+  TOO_MANY_LOGIN_ATTEMPTS_WAIT: {
+    vi: 'Đăng nhập sai quá nhiều lần, vui lòng thử lại sau {} phút',
+    en: 'Too many failed sign-in attempts, please try again in {} minutes',
   },
   OAUTH_STATE_INVALID: {
     vi: 'Phiên đăng nhập OAuth không hợp lệ hoặc đã hết hạn',

@@ -174,7 +174,7 @@ that would need them were removed (see `auth.service.ts` comments). Don't add th
 
 Configured in `.claude/settings.json` (scripts in `.claude/hooks/`):
 
-- **PreToolUse (Write|Edit)** → `guard-paths.mjs` blocks edits to `.env*` and generated
+- **PreToolUse (Write|Edit)** → `guard-paths.mjs` asks before editing generated
   `drizzle/**` files (legacy).
 - **PostToolUse (Write|Edit)** → `format-ts.mjs` runs prettier + eslint `--fix` on the
   touched `.ts/.js` file.

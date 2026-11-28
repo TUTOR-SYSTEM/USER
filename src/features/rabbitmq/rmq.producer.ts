@@ -16,6 +16,8 @@ import {
   SERVICE_NAME_HEADER,
   TRACE_ID_HEADER,
 } from '@packages/context/request-context';
+import { requiresRpcSignature } from '@packages/helpers/redis-keys.policy';
+import { signRpcMessage } from '@packages/helpers/rpc-signature.helper';
 import {
   resolveRmqTarget,
   RmqTarget,
@@ -44,6 +46,19 @@ function withTraceHeaders<T>(message: T): {
     [SERVICE_NAME_HEADER]: SERVICE_NAME,
   };
   return { record: new RmqRecord<T>(message, { headers }), headers };
+}
+
+/**
+ * Signs a message whose pattern the third-service verifies (report F-01, F-07): `email.*` always,
+ * `redis.*` on a sensitive key family. Other messages pass through unchanged.
+ */
+function withRpcSignature<T>(message: T, pattern: string): T {
+  if (!requiresRpcSignature(pattern, message)) return message;
+  const secret = process.env.RPC_ACTOR_SECRET?.trim();
+  if (!secret) {
+    throw new Error(`RPC_ACTOR_SECRET must be set to sign ${pattern}`);
+  }
+  return signRpcMessage(message as object, pattern, secret) as unknown as T;
 }
 
 interface RpcErrorPayload {
@@ -95,7 +110,7 @@ export class RmqProducer implements OnModuleDestroy {
 
   emit<TResult = unknown, TInput = unknown>(pattern: string, message: TInput): Promise<TResult> {
     const client = this.clients[resolveRmqTarget(pattern)];
-    const { record, headers } = withTraceHeaders(message);
+    const { record, headers } = withTraceHeaders(withRpcSignature(message, pattern));
     this.logger.log(
       `[EMIT] ${pattern} correlationId=${headers[CORRELATION_ID_HEADER]} traceId=${headers[TRACE_ID_HEADER]}`,
     );
@@ -118,7 +133,7 @@ export class RmqProducer implements OnModuleDestroy {
     maxRetries: number = 2,
   ): Promise<TResponse> {
     const client = this.clients[resolveRmqTarget(pattern)];
-    const { record, headers } = withTraceHeaders(message);
+    const { record, headers } = withTraceHeaders(withRpcSignature(message, pattern));
     const correlationId = headers[CORRELATION_ID_HEADER];
     const traceId = headers[TRACE_ID_HEADER];
     const totalStartTime = Date.now();

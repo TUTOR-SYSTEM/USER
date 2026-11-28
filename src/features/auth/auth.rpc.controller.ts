@@ -22,6 +22,7 @@ import {
   googleProfileSchema,
   loginByUserCodeSchema,
   loginSchema,
+  logoutSchema,
   refreshTokenBodySchema,
   registerSchema,
   resetPasswordSchema,
@@ -100,7 +101,16 @@ export class AuthRpcController {
     if (actor.id === '' || actor.id !== rest.userId) {
       throw new ForbiddenException(ERROR_MESSAGES.FORBIDDEN_USER_ACTION);
     }
-    return this.authService.logoutService({ userId: rest.userId, sid: rest.sid });
+    // Same validation as the other auth.* patterns: the payload is parsed, never trusted as-is.
+    const body = parseRpcPayload<{ userId: string; sid: string }>(logoutSchema, rest);
+    return this.authService.logoutService({ userId: body.userId, sid: body.sid });
+  }
+
+  @MessagePattern('auth.resendVerifyEmail')
+  resendVerifyEmail(@Payload() dto: ForgotPasswordDto): Promise<ForgotPasswordResponseDto> {
+    return this.authService.resendVerifyEmailService(
+      parseRpcPayload<ForgotPasswordDto>(forgotPasswordSchema, dto),
+    );
   }
 
   @MessagePattern('auth.forgotPassword')

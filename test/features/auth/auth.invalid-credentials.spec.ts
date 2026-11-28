@@ -57,7 +57,10 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     userService = { getUserByField: jest.fn().mockResolvedValue([]) };
     rmq = {
-      send: jest.fn().mockResolvedValue(undefined),
+      // redis.incr replies { count } like the real counter; anything else resolves undefined.
+      send: jest.fn(async (pattern: string) =>
+        pattern === 'redis.incr' ? { count: 1 } : undefined,
+      ),
       emit: jest.fn().mockResolvedValue(undefined),
     };
     const config = { get: (key: string) => env[key] } as unknown as ConfigService;
@@ -74,7 +77,7 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
   });
 
   // AC1: unknown email -> 401 with the generic credentials message (no account enumeration)
-  it('AC1: unknown email rejects with UnauthorizedException (401) and INVALID_CREDENTIALS', async () => {
+  it('AC1: unknown email rejects with UnauthorizedException (401) and EMAIL_NOT_REGISTERED', async () => {
     userService.getUserByField.mockResolvedValue([]);
 
     const error = await captureError(
@@ -83,13 +86,13 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
-    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.EMAIL_NOT_REGISTERED);
     // Only the lockout counter may be touched on a failed sign-in: no session is written.
     expect(rmq.send.mock.calls.map(([pattern]) => pattern)).not.toContain('redis.set');
   });
 
   // AC2: wrong password -> 401 with the same message as an unknown email
-  it('AC2: wrong password rejects with UnauthorizedException (401) and INVALID_CREDENTIALS', async () => {
+  it('AC2: wrong password rejects with UnauthorizedException (401) and INVALID_PASSWORD', async () => {
     userService.getUserByField.mockResolvedValue([buildUser({ password: correctPasswordHash })]);
 
     const error = await captureError(
@@ -98,7 +101,7 @@ describe('AuthService invalid credentials (HTTP status 401)', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect((error as UnauthorizedException).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
-    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_CREDENTIALS);
+    expect((error as UnauthorizedException).message).toBe(ERROR_MESSAGES.INVALID_PASSWORD);
     // Only the lockout counter may be touched on a failed sign-in: no session is written.
     expect(rmq.send.mock.calls.map(([pattern]) => pattern)).not.toContain('redis.set');
   });

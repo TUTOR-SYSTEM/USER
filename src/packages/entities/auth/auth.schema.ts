@@ -12,6 +12,7 @@ export const AUTH_MESSAGES = {
   EMAIL_INVALID: ERROR_MESSAGES.AUTH_EMAIL_INVALID,
   USERNAME_REQUIRED: ERROR_MESSAGES.AUTH_USERNAME_REQUIRED,
   USERNAME_MAX: ERROR_MESSAGES.AUTH_USERNAME_MAX,
+  USERNAME_INVALID: ERROR_MESSAGES.AUTH_USERNAME_INVALID,
   PASSWORD_REQUIRED: ERROR_MESSAGES.AUTH_PASSWORD_REQUIRED,
   PASSWORD_MIN: ERROR_MESSAGES.AUTH_PASSWORD_MIN,
   PASSWORD_MAX: ERROR_MESSAGES.AUTH_PASSWORD_MAX,
@@ -43,7 +44,7 @@ export const emailFieldSchema = z
 export const registerSchema = z.object({
   email: emailFieldSchema,
   username: z
-    .string({ message: AUTH_MESSAGES.USERNAME_REQUIRED })
+    .string({ message: AUTH_MESSAGES.USERNAME_INVALID })
     .max(50, { message: AUTH_MESSAGES.USERNAME_MAX })
     .optional(),
   password: newPasswordSchema,
@@ -63,18 +64,31 @@ export const loginSchema = z.object({
 });
 
 export const loginByUserCodeSchema = z.object({
+  // Codes are issued upper-case; normalise so "abc123" finds "ABC123" instead of a silent 401.
   userCode: z
     .string({ message: ERROR_MESSAGES.AUTH_USER_CODE_REQUIRED })
+    .trim()
+    .toUpperCase()
     .min(6, { message: ERROR_MESSAGES.AUTH_USER_CODE_LENGTH })
     .max(6, { message: ERROR_MESSAGES.AUTH_USER_CODE_LENGTH }),
   password: loginPasswordSchema,
-  role: z.enum(['PARENT', 'STUDENT']),
+  role: z.enum(['PARENT', 'STUDENT'], { message: ERROR_MESSAGES.AUTH_ROLE_INVALID }),
 });
 
 export const refreshTokenBodySchema = z.object({
   refreshToken: z
     .string({ message: AUTH_MESSAGES.REFRESH_TOKEN_REQUIRED })
     .min(1, { message: AUTH_MESSAGES.REFRESH_TOKEN_REQUIRED }),
+});
+
+/** `auth.logout` payload (after the actor check). Both ids must be UUIDs. */
+export const logoutSchema = z.object({
+  userId: z
+    .string({ message: ERROR_MESSAGES.INVALID_SESSION })
+    .uuid({ message: ERROR_MESSAGES.INVALID_SESSION }),
+  sid: z
+    .string({ message: ERROR_MESSAGES.INVALID_SESSION })
+    .uuid({ message: ERROR_MESSAGES.INVALID_SESSION }),
 });
 
 export const forgotPasswordSchema = z.object({

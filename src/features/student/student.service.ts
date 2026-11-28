@@ -682,13 +682,13 @@ export class StudentService {
     const student = await this.repo.findById({ id });
     if (!student) throw new NotFoundException(ERROR_MESSAGES.STUDENT_NOT_FOUND);
     assertCanManage(actor, student);
+    // Revoke first (same as the tutor path): a failure leaves the password unchanged.
+    await revokeAllUserSessions(this.rmqProducer, id);
     // An admin-set password is temporary: the student must choose their own at next sign-in.
     await this.repo.update({
       id,
       data: { password: await hashData(password), mustChangePassword: true },
     });
-    // A new password must end every session the old one had (same as the tutor path).
-    await revokeAllUserSessions(this.rmqProducer, id);
     return { id, passwordUpdated: true };
   }
 
