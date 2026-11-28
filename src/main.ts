@@ -4,6 +4,7 @@
 // runs inside `NestFactory.create()` below). Without this, RmqProducer's ClientProxy
 // silently falls back to `amqp://guest:guest@localhost:5672` instead of the real URL.
 import 'dotenv/config';
+import { resolveRabbitMqUrl } from './features/rabbitmq/rmq-url';
 import { Logger } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
@@ -54,7 +55,7 @@ async function bootstrap() {
     {
       transport: Transport.RMQ,
       options: {
-        urls: [process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5672'],
+        urls: [resolveRabbitMqUrl() ?? 'amqp://guest:guest@localhost:5672'],
         queue: process.env.USER_QUEUE ?? 'user_queue',
         queueOptions: { durable: true },
         prefetchCount: 10,

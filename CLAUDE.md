@@ -155,7 +155,7 @@ the pattern string across repos, so a mismatch fails at runtime with "no matchin
 | `LOGIN_MAX_ATTEMPTS` / `LOGIN_ATTEMPT_WINDOW_SECONDS` | Failed sign-ins per (client IP, account) before lockout (default 5) and the window length in seconds (default 900). Counter lives in `third`'s Redis (`login-fail:<sha256>`). |
 | `LOGIN_ACCOUNT_MAX_ATTEMPTS` | Failed sign-ins per account across all IPs in the same window (default 20). Stops distributed guessing of one account. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALLBACK_URL` / `GOOGLE_OAUTH_REDIRECT_URL` | Google OAuth (final token issuance lands here via RPC from `gateway`) |
-| `RABBITMQ_URL`                | RabbitMQ connection URL (local `amqp://admin:admin@localhost:5672`; Railway: RabbitMQ service private URL) |
+| `RABBITMQ_URL`                | RabbitMQ connection URL (local `amqp://admin:admin@localhost:5672`; Railway: RabbitMQ service private URL). Optional if `RABBITMQ_HOST` is set: then built from `RABBITMQ_HOST`, `RABBITMQ_PORT` (5672), `RABBITMQ_USER`/`RABBITMQ_DEFAULT_USER`, `RABBITMQ_PASSWORD`/`RABBITMQ_DEFAULT_PASS`, `RABBITMQ_VHOST` (`/`), `RABBITMQ_TLS=true` (amqps) |
 | `USER_QUEUE`                  | RMQ RPC listener queue name (default `user_queue`) — this is the queue `gateway`'s `USER_SERVICE` client actually talks to |
 | `RPC_ACTOR_SECRET`            | Required. HMAC secret shared with `gateway`: user-acting RPCs and login client IPs are trusted only when gateway signed them. Must be identical in both services; boot fails without it. |
 | `TUTOR_QUEUE` / `THIRD_QUEUE` | Queues this service's `RmqProducer` sends to (default `tutor_queue` / `third_queue`) |
